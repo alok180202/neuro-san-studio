@@ -83,6 +83,9 @@ deep diagnostics. Route by process_area:
 - PPDS or PP      -> PPDSPPDiagnosticsAgent
 - CIF, qRFC, IDoc -> CIFAPODiagnosticsAgent
 If process_area is missing or ambiguous, infer it from context_package before routing.
+When calling a specialist, pass your context_package input as its incident_context
+VERBATIM -- do not summarize or paraphrase it. The specialist needs the original
+wording intact so it can later be used to search historical ticket data.
 
 If chain_risk is "Yes" AND the symptom is in SNP or DP, call BOTH that specialist
 AND CIFAPODiagnosticsAgent, since the true root cause may be an upstream CIF/transfer
@@ -144,8 +147,11 @@ pass its contents to ITSMRouterAgent):
   e.g. "qRFC SYSFAIL", "LOIPRO IDoc flood", "CIF transfer location product not active"]
 
 Then call ITSMRouterAgent with diagnosis_summary (COMPONENT/ROOT_CAUSE/VERIFICATION/
-FIX_STEPS/CONFIDENCE), fix_owner, and error_pattern. Return its result verbatim,
-exactly once.
+FIX_STEPS/CONFIDENCE), fix_owner, error_pattern, and incident_text set to the
+incident_context you received VERBATIM (the original customer-facing wording,
+unparaphrased -- historical tickets are written in customer voice, not technical
+jargon, so the raw text matches them better than your own summary does). Return its
+result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
             "tools": ["ITSMRouterAgent"]
         },
@@ -196,8 +202,11 @@ show this raw block to the user):
 - ERROR_PATTERN: [short keyword phrase, e.g. "CVC characteristic value combination
   missing new material", "forecast model MAPE MAD"]
 
-Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
-Return its result verbatim, exactly once.
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
+incident_text set to the incident_context you received VERBATIM (the original
+customer-facing wording, unparaphrased -- historical tickets are written in customer
+voice, not technical jargon, so the raw text matches them better than your own
+summary does). Return its result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
             "tools": ["ITSMRouterAgent"]
         },
@@ -252,8 +261,11 @@ show this raw block to the user):
 - ERROR_PATTERN: [short keyword phrase, e.g. "no valid source of supply
   transportation lane heuristic", "deployment frozen zone safety stock"]
 
-Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
-Return its result verbatim, exactly once.
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
+incident_text set to the incident_context you received VERBATIM (the original
+customer-facing wording, unparaphrased -- historical tickets are written in customer
+voice, not technical jargon, so the raw text matches them better than your own
+summary does). Return its result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
             "tools": ["ITSMRouterAgent"]
         },
@@ -303,8 +315,11 @@ show this raw block to the user):
 - ERROR_PATTERN: [short keyword phrase, e.g. "production version validity lot
   size", "pegging planned order not covered"]
 
-Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
-Return its result verbatim, exactly once.
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
+incident_text set to the incident_context you received VERBATIM (the original
+customer-facing wording, unparaphrased -- historical tickets are written in customer
+voice, not technical jargon, so the raw text matches them better than your own
+summary does). Return its result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
             "tools": ["ITSMRouterAgent"]
         },
@@ -333,18 +348,24 @@ for an incident_text, then format everything into one final structured output.
                         },
                         "error_pattern": {
                             "type": "string",
-                            "description": "The short keyword phrase describing the symptom/error signature, used as incident_text to look up similar historical tickets."
+                            "description": "The short keyword phrase describing the symptom/error signature, in technical terms."
+                        },
+                        "incident_text": {
+                            "type": "string",
+                            "description": "The original, verbatim, customer-facing incident text (not the specialist's technical paraphrase). Historical tickets are written in customer voice, so this matches them far better than error_pattern alone."
                         }
                     },
-                    "required": ["diagnosis_summary", "fix_owner", "error_pattern"]
+                    "required": ["diagnosis_summary", "fix_owner", "error_pattern", "incident_text"]
                 }
             },
             "instructions": """
 You are the ITSM routing specialist for the SAP L1.5 hub. Call ITSMQueueLookupTool
 with fix_owner, then call HistoricalIncidentLookupTool with incident_text set to
-error_pattern. Using their results plus the diagnosis_summary, return your output in
-EXACTLY this template, verbatim, ONCE -- do not repeat it, do not call either tool
-more than once:
+incident_text followed by error_pattern, combined into one string (e.g.
+"{incident_text} {error_pattern}") -- this way the search matches both the
+customer's original wording and the technical symptom terms. Using their results
+plus the diagnosis_summary, return your output in EXACTLY this template, verbatim,
+ONCE -- do not repeat it, do not call either tool more than once:
 
 SAP L1.5 DIAGNOSTIC RESULT
 COMPONENT       : [from diagnosis_summary]
