@@ -317,8 +317,8 @@ Return its result verbatim, exactly once.
             "function": {
                 "description": """
 I produce the final SAP L1.5 diagnostic result card: I look up the exact ITSM
-queue for a fix_owner and the relevant SAP Notes for an error_pattern, then format
-everything into one final structured output.
+queue for a fix_owner and similar past incidents from our historical ticket data
+for an incident_text, then format everything into one final structured output.
 """,
                 "parameters": {
                     "type": "object",
@@ -333,7 +333,7 @@ everything into one final structured output.
                         },
                         "error_pattern": {
                             "type": "string",
-                            "description": "The short keyword phrase describing the symptom/error signature, used to look up relevant SAP Notes."
+                            "description": "The short keyword phrase describing the symptom/error signature, used as incident_text to look up similar historical tickets."
                         }
                     },
                     "required": ["diagnosis_summary", "fix_owner", "error_pattern"]
@@ -341,9 +341,10 @@ everything into one final structured output.
             },
             "instructions": """
 You are the ITSM routing specialist for the SAP L1.5 hub. Call ITSMQueueLookupTool
-with fix_owner, then call SAPNoteLookupTool with error_pattern. Using their results
-plus the diagnosis_summary, return your output in EXACTLY this template, verbatim,
-ONCE -- do not repeat it, do not call either tool more than once:
+with fix_owner, then call HistoricalIncidentLookupTool with incident_text set to
+error_pattern. Using their results plus the diagnosis_summary, return your output in
+EXACTLY this template, verbatim, ONCE -- do not repeat it, do not call either tool
+more than once:
 
 SAP L1.5 DIAGNOSTIC RESULT
 COMPONENT       : [from diagnosis_summary]
@@ -359,11 +360,13 @@ VERIFICATION STEPS:
 FIX STEPS:
 [numbered list from diagnosis_summary]
 ----------------------------------------
-SAP NOTES       : [from SAPNoteLookupTool -- note numbers, descriptions, components]
+SIMILAR PAST INCIDENTS: [from HistoricalIncidentLookupTool -- for each match, its
+Ticket_ID, module_owner/routing_label, and resolution_summary (or the recorded note
+that none exists). If no similar ticket was found, say so plainly -- do not invent one.]
 ----------------------------------------
 ESCALATION      : [if unresolved, contact -- from ITSMQueueLookupTool notes]
 """ ${sap_domain_preamble},
-            "tools": ["ITSMQueueLookupTool", "SAPNoteLookupTool"]
+            "tools": ["ITSMQueueLookupTool", "HistoricalIncidentLookupTool"]
         },
 
         # ================================================================
@@ -388,24 +391,24 @@ ESCALATION      : [if unresolved, contact -- from ITSMQueueLookupTool notes]
         },
 
         # ================================================================
-        # CODED TOOL: SAP Note Lookup
+        # CODED TOOL: Historical Incident Lookup
         # ================================================================
         {
-            "name": "SAPNoteLookupTool",
+            "name": "HistoricalIncidentLookupTool",
             "function": {
-                "description": "Fuzzy keyword-matches an error_pattern against a demo dictionary of SAP Notes and returns the matching notes. Deterministic lookup, no LLM, no external API.",
+                "description": "Finds the most similar past incidents in our historical ticket data (TF-IDF + cosine similarity over 902 real, scrubbed tickets) for a given incident description, and returns how those tickets were routed and resolved. Deterministic lookup, no LLM, no external API -- we don't have real SAP Support Portal access, so this replaces SAP Note citations.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "error_pattern": {
+                        "incident_text": {
                             "type": "string",
-                            "description": "A short keyword phrase describing the symptom or error signature to match against known SAP Notes."
+                            "description": "The incident description or short error-pattern phrase to match against historical ticket descriptions."
                         }
                     },
-                    "required": ["error_pattern"]
+                    "required": ["incident_text"]
                 }
             },
-            "class": "coded_tools.sap_l15.sap_note_lookup.SAPNoteLookupTool"
+            "class": "coded_tools.sap_l15.historical_incident_lookup.HistoricalIncidentLookupTool"
         }
     ]
 }

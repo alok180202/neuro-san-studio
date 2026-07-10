@@ -47,3 +47,6 @@ timedinput>=0.1.1
 
 # For checkbox-based selection in CLI
 questionary>=2.0.0
+
+# For reading historical ticket data (.xlsx) in the SAP L1.5 hub's incident-similarity lookup tool
+openpyxl>=3.1.5

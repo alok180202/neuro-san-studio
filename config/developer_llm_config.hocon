@@ -73,6 +73,21 @@
                 "model_name": "gemini-3.1-flash-lite",
                 # Stream tokens back as they're generated instead of waiting for the full response.
                 "streaming": true,
+                # Fail fast instead of retrying with backoff. Without this, a 429 (e.g. a
+                # blown free-tier quota) makes every single hop in a multi-agent chain wait
+                # out several retries before falling back to the next provider below --
+                # turning a ~15s chain into several minutes. With max_retries=0, a downed
+                # Gemini fails almost instantly and the chain moves on to Mistral right away.
+                "max_retries": 0,
+            },
+            {
+                # Fall back further to Mistral's free tier if Gemini's free-tier quota is
+                # exhausted (Gemini's free tier is capped at 500 requests/day, which a deep
+                # multi-agent chain can burn through quickly). Mistral is not a built-in
+                # provider, so it needs the full LangChain class path (see docs/user_guide.md
+                # "Mistral" section) and requires `pip install langchain-mistralai==1.1.2`.
+                "class": "langchain_mistralai.chat_models.ChatMistralAI",
+                "model_name": "mistral-medium-latest",
             }
         ]
     }
