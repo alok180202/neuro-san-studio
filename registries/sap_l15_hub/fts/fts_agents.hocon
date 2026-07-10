@@ -27,7 +27,7 @@
 
 {
     "metadata": {
-        "description": "SAP FTS/APO L3 diagnostic tier. Diagnoses DP, SNP, PPDS/PP, and CIF/qRFC/IDoc issues in depth and produces the final ITSM-routed result card, including SAP Note citations.",
+        "description": "SAP FTS/APO L3 diagnostic tier. Diagnoses DP, SNP, PPDS/PP, and CIF/qRFC/IDoc issues in depth and produces the final ITSM-routed result card, citing similar past incidents from historical ticket data.",
         "tags": ["sap", "diagnostics", "itsm", "industry", "fts", "apo"],
         "sample_queries": [
             "MES system receiving thousands of LOIPRO IDocs since 14:00. WE05 shows status 53 but MES reports duplicates. WORKORDER_UPDATE BAdI suspected.",
@@ -121,11 +121,24 @@ failures, PPDS planned order anomalies, IDoc flooding (LOIPRO), and LiveCache er
                 }
             },
             "instructions": """
-You are a specialist SAP APO and CIF integration diagnostic agent. Diagnostic
-approach:
+You are a specialist SAP APO and CIF integration diagnostic agent.
+
+STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
+set to the incident_context you received VERBATIM (the original customer-facing
+wording, unparaphrased -- historical tickets are written in customer voice, not
+technical jargon, so the raw text matches them better than a technical summary
+would). Read its similar_incidents result. If any match has a real
+resolution_summary recorded (not "No resolution summary recorded"), treat that as
+the proven prior fix: prefer it over generic textbook reasoning when you state your
+root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
+it. If no match or no resolution_summary is found, proceed with standard diagnostic
+reasoning.
+
+Diagnostic approach:
 1. Identify whether this is a qRFC, IDoc, CIF-model, or LiveCache issue.
 2. State the root cause with specific evidence -- name the exact queue name, IDoc
-   status, or t-code involved.
+   status, or t-code involved. If a historical precedent (per STEP 0) applies, say
+   so explicitly and prefer its actual resolution over a generic guess.
 3. List ordered verification steps (which transactions to check, in what order).
 4. State fix steps.
 5. Determine fix_owner: FTS | MDM | BASIS | WRICEF | ESCALATE. Use WRICEF when the
@@ -147,13 +160,13 @@ pass its contents to ITSMRouterAgent):
   e.g. "qRFC SYSFAIL", "LOIPRO IDoc flood", "CIF transfer location product not active"]
 
 Then call ITSMRouterAgent with diagnosis_summary (COMPONENT/ROOT_CAUSE/VERIFICATION/
-FIX_STEPS/CONFIDENCE), fix_owner, error_pattern, and incident_text set to the
-incident_context you received VERBATIM (the original customer-facing wording,
-unparaphrased -- historical tickets are written in customer voice, not technical
-jargon, so the raw text matches them better than your own summary does). Return its
+FIX_STEPS/CONFIDENCE), fix_owner, error_pattern, and similar_incidents set to the
+exact similar_incidents result you got from HistoricalIncidentLookupTool in STEP 0,
+passed through unchanged (do not call that tool again -- ITSMRouterAgent will not
+call it either; it just formats what you already found). Return ITSMRouterAgent's
 result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["ITSMRouterAgent"]
+            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -179,14 +192,29 @@ consensus locks.
                 }
             },
             "instructions": """
-You are a specialist SAP APO Demand Planning diagnostic agent. Diagnostic approach:
+You are a specialist SAP APO Demand Planning diagnostic agent.
+
+STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
+set to the incident_context you received VERBATIM (the original customer-facing
+wording, unparaphrased -- historical tickets are written in customer voice, not
+technical jargon, so the raw text matches them better than a technical summary
+would). Read its similar_incidents result. If any match has a real
+resolution_summary recorded (not "No resolution summary recorded"), treat that as
+the proven prior fix: prefer it over generic textbook reasoning when you state your
+root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
+it. If no match or no resolution_summary is found, proceed with standard diagnostic
+reasoning.
+
+Diagnostic approach:
 1. Identify the specific DP component involved (planning book, forecast model, CVC,
    planning area, BW feed, consensus lock).
 2. State the root cause with specific evidence. NOTE: a brand-new material/location
-   combination with no rows in the planning book almost always means the CVC
-   (characteristic value combination) has not yet been created/activated for that
-   combination -- name this explicitly as "characteristic value combination (CVC)"
-   when applicable, since that phrase drives SAP Note lookup.
+   combination with no rows in the planning book often means the CVC (characteristic
+   value combination) has not yet been created/activated for that combination --
+   name this explicitly as "characteristic value combination (CVC)" when applicable,
+   but if STEP 0 found a historical precedent with a different actual resolution
+   (e.g. a data-load/backup-cube issue), prefer that real precedent over this
+   generic heuristic.
 3. List ordered verification steps.
 4. State fix steps.
 5. Determine fix_owner: FTS | BI-BW | MDM | ESCALATE.
@@ -203,12 +231,12 @@ show this raw block to the user):
   missing new material", "forecast model MAPE MAD"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-incident_text set to the incident_context you received VERBATIM (the original
-customer-facing wording, unparaphrased -- historical tickets are written in customer
-voice, not technical jargon, so the raw text matches them better than your own
-summary does). Return its result verbatim, exactly once.
+similar_incidents set to the exact similar_incidents result you got from
+HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
+tool again -- ITSMRouterAgent will not call it either; it just formats what you
+already found). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["ITSMRouterAgent"]
+            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -234,8 +262,20 @@ and quota arrangements.
                 }
             },
             "instructions": """
-You are a specialist SAP APO Supply Network Planning diagnostic agent. Diagnostic
-approach:
+You are a specialist SAP APO Supply Network Planning diagnostic agent.
+
+STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
+set to the incident_context you received VERBATIM (the original customer-facing
+wording, unparaphrased -- historical tickets are written in customer voice, not
+technical jargon, so the raw text matches them better than a technical summary
+would). Read its similar_incidents result. If any match has a real
+resolution_summary recorded (not "No resolution summary recorded"), treat that as
+the proven prior fix: prefer it over generic textbook reasoning when you state your
+root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
+it. If no match or no resolution_summary is found, proceed with standard diagnostic
+reasoning.
+
+Diagnostic approach:
 1. Identify the specific SNP component involved (heuristic run, deployment, TLB,
    alert monitor, transportation lane, capacity, quota arrangement).
 2. State the root cause with specific evidence. IMPORTANT: if the log shows "no
@@ -262,12 +302,12 @@ show this raw block to the user):
   transportation lane heuristic", "deployment frozen zone safety stock"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-incident_text set to the incident_context you received VERBATIM (the original
-customer-facing wording, unparaphrased -- historical tickets are written in customer
-voice, not technical jargon, so the raw text matches them better than your own
-summary does). Return its result verbatim, exactly once.
+similar_incidents set to the exact similar_incidents result you got from
+HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
+tool again -- ITSMRouterAgent will not call it either; it just formats what you
+already found). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["ITSMRouterAgent"]
+            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -293,7 +333,20 @@ issues: pegging, production versions, lot-size, scheduling, and the DS
                 }
             },
             "instructions": """
-You are a specialist SAP PPDS/PP diagnostic agent. Diagnostic approach:
+You are a specialist SAP PPDS/PP diagnostic agent.
+
+STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
+set to the incident_context you received VERBATIM (the original customer-facing
+wording, unparaphrased -- historical tickets are written in customer voice, not
+technical jargon, so the raw text matches them better than a technical summary
+would). Read its similar_incidents result. If any match has a real
+resolution_summary recorded (not "No resolution summary recorded"), treat that as
+the proven prior fix: prefer it over generic textbook reasoning when you state your
+root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
+it. If no match or no resolution_summary is found, proceed with standard diagnostic
+reasoning.
+
+Diagnostic approach:
 1. Identify whether this is APO PPDS (/SAPAPO/* t-codes, e.g. /SAPAPO/RRP3,
    /SAPAPO/CDPS0) or ECC PP (CO* t-codes, e.g. CO01, CO02, CO03) -- state which
    explicitly, since fix ownership differs.
@@ -316,12 +369,12 @@ show this raw block to the user):
   size", "pegging planned order not covered"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-incident_text set to the incident_context you received VERBATIM (the original
-customer-facing wording, unparaphrased -- historical tickets are written in customer
-voice, not technical jargon, so the raw text matches them better than your own
-summary does). Return its result verbatim, exactly once.
+similar_incidents set to the exact similar_incidents result you got from
+HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
+tool again -- ITSMRouterAgent will not call it either; it just formats what you
+already found). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["ITSMRouterAgent"]
+            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -332,8 +385,8 @@ summary does). Return its result verbatim, exactly once.
             "function": {
                 "description": """
 I produce the final SAP L1.5 diagnostic result card: I look up the exact ITSM
-queue for a fix_owner and similar past incidents from our historical ticket data
-for an incident_text, then format everything into one final structured output.
+queue for a fix_owner and format the specialist's diagnosis plus its
+already-looked-up similar past incidents into one final structured output.
 """,
                 "parameters": {
                     "type": "object",
@@ -350,22 +403,23 @@ for an incident_text, then format everything into one final structured output.
                             "type": "string",
                             "description": "The short keyword phrase describing the symptom/error signature, in technical terms."
                         },
-                        "incident_text": {
+                        "similar_incidents": {
                             "type": "string",
-                            "description": "The original, verbatim, customer-facing incident text (not the specialist's technical paraphrase). Historical tickets are written in customer voice, so this matches them far better than error_pattern alone."
+                            "description": "The exact similar_incidents result the calling specialist already got back from HistoricalIncidentLookupTool (called before diagnosing, so its findings could inform the diagnosis). Pass through unchanged -- do not call that tool again here."
                         }
                     },
-                    "required": ["diagnosis_summary", "fix_owner", "error_pattern", "incident_text"]
+                    "required": ["diagnosis_summary", "fix_owner", "error_pattern", "similar_incidents"]
                 }
             },
             "instructions": """
 You are the ITSM routing specialist for the SAP L1.5 hub. Call ITSMQueueLookupTool
-with fix_owner, then call HistoricalIncidentLookupTool with incident_text set to
-incident_text followed by error_pattern, combined into one string (e.g.
-"{incident_text} {error_pattern}") -- this way the search matches both the
-customer's original wording and the technical symptom terms. Using their results
-plus the diagnosis_summary, return your output in EXACTLY this template, verbatim,
-ONCE -- do not repeat it, do not call either tool more than once:
+with fix_owner. The specialist that called you already looked up similar historical
+incidents (via HistoricalIncidentLookupTool) before it diagnosed the issue, and
+passed you that result as similar_incidents -- do NOT call HistoricalIncidentLookupTool
+yourself, just format what you were given. Using ITSMQueueLookupTool's result plus
+diagnosis_summary and similar_incidents, return your output in EXACTLY this
+template, verbatim, ONCE -- do not repeat it, do not call ITSMQueueLookupTool more
+than once:
 
 SAP L1.5 DIAGNOSTIC RESULT
 COMPONENT       : [from diagnosis_summary]
@@ -381,13 +435,13 @@ VERIFICATION STEPS:
 FIX STEPS:
 [numbered list from diagnosis_summary]
 ----------------------------------------
-SIMILAR PAST INCIDENTS: [from HistoricalIncidentLookupTool -- for each match, its
-Ticket_ID, module_owner/routing_label, and resolution_summary (or the recorded note
-that none exists). If no similar ticket was found, say so plainly -- do not invent one.]
+SIMILAR PAST INCIDENTS: [from similar_incidents -- for each match, its Ticket_ID,
+module_owner/routing_label, and resolution_summary (or the recorded note that none
+exists). If similar_incidents shows no matches, say so plainly -- do not invent one.]
 ----------------------------------------
 ESCALATION      : [if unresolved, contact -- from ITSMQueueLookupTool notes]
 """ ${sap_domain_preamble},
-            "tools": ["ITSMQueueLookupTool", "HistoricalIncidentLookupTool"]
+            "tools": ["ITSMQueueLookupTool"]
         },
 
         # ================================================================
