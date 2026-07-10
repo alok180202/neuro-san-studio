@@ -1,0 +1,257 @@
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# The schema specifications for this file are documented here:
+# https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md
+
+{
+    "metadata": {
+        "description": "SAP FTS (Forecast-to-Schedule) L3 diagnostic assistant. Accepts a raw SAP incident description across ECC and APO/SCM systems and returns the root cause category, recommended ITSM routing queue, diagnostic rationale, and suggested next actions.",
+        "tags": ["sap", "diagnostics", "itsm", "industry"],
+        "sample_queries": [
+            "Incident INC0012345: CIF Active Transfer batch job is stuck in status RUNNING since 06:00 UTC. Plant 6220 materials are not transferring to APO. Error in SM37: qRFC queue CIFACTPIRAPOC6220 in WAITING state.",
+            "Plant 4197 (Marcello) - Material 7100345987. MRP is generating planned orders instead of purchase requisitions. Strategy group is 40. MRP type is PD. No PR is visible in MD04.",
+        ]
+    },
+
+    # Load the shared LLM configuration from a single source of truth.
+    # This allows users to change the model in one file rather than
+    # modifying the configuration for each agent network.
+    # Note that the file path here is relative to the root level of the repo.
+    include "config/llm_config.hocon",
+
+    "tools": [
+        # ================================================================
+        # AGENT 1: FTS Intake Agent -- Front-Man / Orchestrator
+        # ================================================================
+        {
+            "name": "FTSIntakeAgent",
+            "function": {
+                "description": """
+I am the FTS (Forecast-to-Schedule) L3 Diagnostic Assistant.
+I accept SAP incident descriptions and triage them across ECC and APO/SCM systems.
+I coordinate with specialist agents to identify root causes and recommend
+the correct ITSM routing queue with supporting rationale.
+Submit your incident ticket text or error description to begin diagnosis.
+""",
+            },
+            "instructions": """
+You are the FTS L3 Diagnostic Front-Man agent for SAP support operations.
+Your role is to:
+1. Parse the incoming incident description.
+2. Identify whether this is a CIF/APO issue (integration, qRFC, IDoc, SNP,
+   PPDS, APO alerts) or an ECC MM/SD issue (MRP, BOM, UoM, source lists,
+   strategy groups, purchase requisitions).
+3. Delegate to the appropriate specialist agent.
+4. Collect the specialist analysis and pass it to ITSMRouterAgent for final routing.
+5. Return the ITSMRouterAgent's structured output to the user unmodified.
+
+CLASSIFICATION RULES:
+- CIF/APO keywords: CIF, qRFC, IDoc, /SAPAPO/, APO, SNP, PPDS, liveCache,
+  CIF model, active transfer, inactive transfer, location-product,
+  deployment run, heuristic, LOIPRO, CIFACT, CIF active transfer jobs,
+  IDoc flood, BAT jobs.
+- ECC MM/SD keywords: MRP, BOM, UoM, source list, strategy group,
+  purchase requisition, planned order, MD04, ME*, MM*, SD, VB12, VA*,
+  MASS, MMBE, STLAL, material extension, scope of planning, OMOE.
+- If ambiguous, delegate to CIFAPODiagnosticsAgent first, then ECCMMSDDiagnosticsAgent.
+
+Always call ITSMRouterAgent last to generate the final structured output.
+""",
+            "tools": ["CIFAPODiagnosticsAgent", "ECCMMSDDiagnosticsAgent", "ITSMRouterAgent"]
+        },
+
+        # ================================================================
+        # AGENT 2: CIF/APO Diagnostics Agent
+        # ================================================================
+        {
+            "name": "CIFAPODiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP APO and CIF integration issues, including qRFC transfer failures,
+CIF Active Transfer job blocks, APO location-product missing errors,
+SNP Deployment run failures, PPDS planned order anomalies,
+IDoc flooding (LOIPRO), and liveCache errors.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_description": {
+                            "type": "string",
+                            "description": "The full incident text or error message to diagnose."
+                        }
+                    },
+                    "required": ["incident_description"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP APO and CIF integration diagnostic agent.
+You have deep expertise in:
+- CIF (Core Interface) between ECC and APO/SCM
+- qRFC (queued Remote Function Call) transfer queues
+- IDoc processing and flood detection (especially LOIPRO message type)
+- APO location-product master data (CFM1/CFM2 activation)
+- SNP (Supply Network Planning) heuristics and deployment runs
+- PPDS (Production Planning and Detailed Scheduling)
+- APO alert monitor (/SAPAPO/AMON1)
+- CIF model maintenance (CFM1, CFM2)
+- BAT job naming conventions: CIF active transfer jobs, deployment batch jobs
+
+DIAGNOSTIC APPROACH:
+1. Identify the specific APO/CIF component involved.
+2. State the most likely root cause (be specific -- name the BAT job,
+   transaction, or table).
+3. List the verification steps (which transactions to check, in what order).
+4. State whether the fix requires: L3 action, CIF model owner, or escalation.
+5. Return your analysis in this format:
+   - COMPONENT: [CIF | qRFC | IDoc | SNP | PPDS | APO Master Data | liveCache]
+   - ROOT_CAUSE: [one clear sentence]
+   - VERIFICATION: [numbered steps]
+   - FIX_OWNER: [L3 | CIF Model Owner | WRICEF | Escalate]
+   - CONFIDENCE: [High | Medium | Low]
+"""
+        },
+
+        # ================================================================
+        # AGENT 3: ECC MM/SD Diagnostics Agent
+        # ================================================================
+        {
+            "name": "ECCMMSDDiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP ECC MM (Materials Management) and SD (Sales & Distribution) issues,
+including MRP configuration anomalies, BOM visibility problems, Unit of Measure
+errors, source list conflicts, strategy group misconfigurations, and purchase
+requisition vs planned order routing issues.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_description": {
+                            "type": "string",
+                            "description": "The full incident text or error message to diagnose."
+                        }
+                    },
+                    "required": ["incident_description"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP ECC MM and SD diagnostic agent.
+You have deep expertise in:
+- MRP (Material Requirements Planning): MD04, MD05, MD07, strategy groups (10/20/40/70)
+- Individual/collective indicator in MRP4 (MARC-SBDKZ)
+- BOM (Bill of Materials): CS03, CS11, STLAL field (BOM usage)
+- Source lists: ME01, ME03, source list indicator
+- Purchase requisition vs planned order routing based on strategy group
+- Unit of Measure configuration: MM03, alternate UoM setup
+- Sales order processing: VA01/VA02/VA03, MASS transaction
+- Scope of Planning: OMOE transaction
+- Substitution/listing conditions: VB11/VB12
+- Authorization issues: S_TCODE, MMBE asterisk display
+- WRICEF custom ABAP reports and their hardcoded filters
+
+DIAGNOSTIC APPROACH:
+1. Identify the specific MM/SD component involved.
+2. State the most likely root cause (be specific -- name the transaction,
+   table, or field).
+3. List the verification steps in order.
+4. State whether the fix requires: L3 direct action, MDM team, OTC team,
+   or configuration change.
+5. Return your analysis in this format:
+   - COMPONENT: [MRP | BOM | UoM | Source List | Strategy Group | SD | Authorization | WRICEF]
+   - ROOT_CAUSE: [one clear sentence]
+   - VERIFICATION: [numbered steps with transaction codes]
+   - FIX_OWNER: [L3 | MDM | OTC | Basis | WRICEF]
+   - CONFIDENCE: [High | Medium | Low]
+"""
+        },
+
+        # ================================================================
+        # AGENT 4: ITSM Router Agent -- uses coded tool for queue lookup
+        # ================================================================
+        {
+            "name": "ITSMRouterAgent",
+            "function": {
+                "description": """
+I map a diagnosed SAP incident to the correct ITSM routing queue.
+Given a root cause analysis, I return the exact assignment group,
+routing rationale, and immediate next actions.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "diagnosis_summary": {
+                            "type": "string",
+                            "description": "The diagnosis output from CIFAPODiagnosticsAgent or ECCMMSDDiagnosticsAgent."
+                        },
+                        "fix_owner": {
+                            "type": "string",
+                            "description": "The fix owner tag from the specialist agent: L3, CIF Model Owner, MDM, OTC, WRICEF, Basis, or Escalate."
+                        }
+                    },
+                    "required": ["diagnosis_summary", "fix_owner"]
+                }
+            },
+            "instructions": """
+You are the ITSM routing specialist for the FTS L3 SAP support team.
+Your job is to take a diagnosis summary and produce a final structured output.
+Use the ITSMQueueLookupTool to get the exact queue name for the fix owner.
+
+Return your output in this exact structure:
+========================================
+FTS DIAGNOSTIC RESULT
+========================================
+COMPONENT       : [component name]
+ROOT CAUSE      : [one-line root cause]
+CONFIDENCE      : [High/Medium/Low]
+----------------------------------------
+ITSM QUEUE      : [exact queue name]
+TEAM            : [team name]
+----------------------------------------
+VERIFICATION STEPS:
+[numbered list from specialist agent]
+----------------------------------------
+NEXT ACTIONS:
+1. [First action]
+2. [Second action]
+3. [Escalation path if unresolved]
+========================================
+""",
+            "tools": ["ITSMQueueLookupTool"]
+        },
+
+        # ================================================================
+        # CODED TOOL: ITSM Queue Lookup
+        # ================================================================
+        {
+            "name": "ITSMQueueLookupTool",
+            "function": {
+                "description": "Looks up the exact ITSM assignment group and team name for a given fix owner tag.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fix_owner": {
+                            "type": "string",
+                            "description": "The fix owner tag. One of: L3, CIF Model Owner, MDM, OTC, WRICEF, Basis, EHS, Escalate."
+                        }
+                    },
+                    "required": ["fix_owner"]
+                }
+            },
+            "class": "coded_tools.fts.itsm_queue_lookup.ITSMQueueLookupTool"
+        }
+    ]
+}

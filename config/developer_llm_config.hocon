@@ -68,8 +68,11 @@
             },
             {
                 # Fall back to Google Gemini if both OpenAI and Anthropic are unavailable.
-                # Let neuro-san figure out the latest version of the model
-                "model_name": "gemini-3-flash",
+                # Note: gemini-2.5-flash-lite returns 404 for newer API keys (Google has retired
+                # it for new users), so we use the Gemini 3 lite tier instead.
+                "model_name": "gemini-3.1-flash-lite",
+                # Stream tokens back as they're generated instead of waiting for the full response.
+                "streaming": true,
             }
         ]
     }
