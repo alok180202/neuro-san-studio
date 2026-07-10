@@ -1,0 +1,411 @@
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# The schema specifications for this file are documented here:
+# https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md
+#
+# SAP L1.5 Diagnostic Hub -- Tier 3: FTS/APO deep diagnostics.
+# FTSModuleAgent is this file's front-man so it can be reached from
+# registries/sap_l15_hub/sap_l15_hub.hocon via the external-agent reference
+# "/sap_l15_hub/fts/fts_agents". It performs the PROCESS_AREA routing to the
+# correct specialist(s) below, all of which live in this same network graph.
+# This file is independently registered/servable so the FTS tier can also be
+# invoked and tested directly, as fts/fts_agents.
+
+{
+    "metadata": {
+        "description": "SAP FTS/APO L3 diagnostic tier. Diagnoses DP, SNP, PPDS/PP, and CIF/qRFC/IDoc issues in depth and produces the final ITSM-routed result card, including SAP Note citations.",
+        "tags": ["sap", "diagnostics", "itsm", "industry", "fts", "apo"],
+        "sample_queries": [
+            "MES system receiving thousands of LOIPRO IDocs since 14:00. WE05 shows status 53 but MES reports duplicates. WORKORDER_UPDATE BAdI suspected.",
+            "Demand Planning forecast is not running for new material 9001234567 at DC Hamburg. Material was created last week. Planning book shows no rows.",
+        ]
+    },
+
+    include "config/llm_config.hocon",
+    include "registries/sap_l15_hub/common_defs.hocon",
+
+    # See the matching comment in ../sap_l15_hub.hocon: default max_execution_seconds
+    # is 300s per agent, and FTSModuleAgent's own window includes waiting on the
+    # specialist + ITSMRouterAgent + its 2 coded tools beneath it.
+    "max_execution_seconds": 900,
+
+    "tools": [
+        # ================================================================
+        # AGENT: FTS Module Agent -- front-man for this network, bridges
+        # Tier 2 (ConsultorAgent / L1.5SAPIntakeAgent) into Tier 3 specialists.
+        # ================================================================
+        {
+            "name": "FTSModuleAgent",
+            "function": {
+                "description": """
+I am the FTS/APO diagnostic tier entry point. I dispatch SAP APO and CIF-integration
+tickets to the correct deep-diagnostic specialist (Demand Planning, Supply Network
+Planning, PPDS/PP, or CIF/qRFC/IDoc) and return the final routed result card.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {
+                            "type": "string",
+                            "description": "The structured ticket context (or raw automated-notification text if reached directly from Category A)."
+                        },
+                        "process_area": {
+                            "type": "string",
+                            "description": "One of DP, SNP, PPDS, PP, CIF (or best guess from the raw text if reached directly as a Category A automated notification)."
+                        },
+                        "chain_risk": {
+                            "type": "string",
+                            "description": "Yes or No -- whether the symptom could stem from an upstream CIF/transfer failure."
+                        }
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the FTS Module Agent, the bridge between Tier 2 module ownership and Tier 3
+deep diagnostics. Route by process_area:
+- DP              -> DPDiagnosticsAgent
+- SNP             -> SNPDiagnosticsAgent
+- PPDS or PP      -> PPDSPPDiagnosticsAgent
+- CIF, qRFC, IDoc -> CIFAPODiagnosticsAgent
+If process_area is missing or ambiguous, infer it from context_package before routing.
+
+If chain_risk is "Yes" AND the symptom is in SNP or DP, call BOTH that specialist
+AND CIFAPODiagnosticsAgent, since the true root cause may be an upstream CIF/transfer
+failure surfacing as a planning symptom.
+
+Each specialist you call will itself call ITSMRouterAgent and return a complete,
+already-formatted result card ("SAP L1.5 DIAGNOSTIC RESULT" header). Return that
+result card as your own final answer, verbatim, exactly ONCE.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["DPDiagnosticsAgent", "SNPDiagnosticsAgent", "PPDSPPDiagnosticsAgent", "CIFAPODiagnosticsAgent"]
+        },
+
+        # ================================================================
+        # AGENT: CIF/APO Diagnostics Agent
+        # ================================================================
+        {
+            "name": "CIFAPODiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP APO and CIF integration issues: qRFC transfer failures, CIF Active
+Transfer job blocks, APO location-product missing errors, SNP deployment run
+failures, PPDS planned order anomalies, IDoc flooding (LOIPRO), and LiveCache errors.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_context": {
+                            "type": "string",
+                            "description": "The full incident text or context package to diagnose."
+                        }
+                    },
+                    "required": ["incident_context"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP APO and CIF integration diagnostic agent. Diagnostic
+approach:
+1. Identify whether this is a qRFC, IDoc, CIF-model, or LiveCache issue.
+2. State the root cause with specific evidence -- name the exact queue name, IDoc
+   status, or t-code involved.
+3. List ordered verification steps (which transactions to check, in what order).
+4. State fix steps.
+5. Determine fix_owner: FTS | MDM | BASIS | WRICEF | ESCALATE. Use WRICEF when the
+   root cause is custom ABAP code or a custom BAdI implementation (e.g. a
+   WORKORDER_UPDATE-style BAdI generating redundant IDocs) rather than standard
+   CIF/qRFC configuration or infrastructure.
+If CIF is the true root cause but symptoms surfaced in SNP/DP, state that
+explicitly as a chain relationship.
+
+Produce, internally, in this format (do not show this raw block to the user --
+pass its contents to ITSMRouterAgent):
+- COMPONENT: [CIF | qRFC | IDoc | SNP | PPDS | APO Master Data | LiveCache]
+- ROOT_CAUSE: [one clear sentence with specific evidence]
+- VERIFICATION: [numbered steps]
+- FIX_STEPS: [numbered steps]
+- FIX_OWNER: [FTS | MDM | BASIS | WRICEF | ESCALATE]
+- CONFIDENCE: [High | Medium | Low]
+- ERROR_PATTERN: [a short keyword phrase describing the symptom/error signature,
+  e.g. "qRFC SYSFAIL", "LOIPRO IDoc flood", "CIF transfer location product not active"]
+
+Then call ITSMRouterAgent with diagnosis_summary (COMPONENT/ROOT_CAUSE/VERIFICATION/
+FIX_STEPS/CONFIDENCE), fix_owner, and error_pattern. Return its result verbatim,
+exactly once.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["ITSMRouterAgent"]
+        },
+
+        # ================================================================
+        # AGENT: Demand Planning (DP) Diagnostics Agent
+        # ================================================================
+        {
+            "name": "DPDiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP APO Demand Planning issues: planning books, forecast models, CVCs
+(characteristic value combinations), planning areas, BW feed problems, and
+consensus locks.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_context": {
+                            "type": "string",
+                            "description": "The full incident text or context package to diagnose."
+                        }
+                    },
+                    "required": ["incident_context"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP APO Demand Planning diagnostic agent. Diagnostic approach:
+1. Identify the specific DP component involved (planning book, forecast model, CVC,
+   planning area, BW feed, consensus lock).
+2. State the root cause with specific evidence. NOTE: a brand-new material/location
+   combination with no rows in the planning book almost always means the CVC
+   (characteristic value combination) has not yet been created/activated for that
+   combination -- name this explicitly as "characteristic value combination (CVC)"
+   when applicable, since that phrase drives SAP Note lookup.
+3. List ordered verification steps.
+4. State fix steps.
+5. Determine fix_owner: FTS | BI-BW | MDM | ESCALATE.
+
+Produce, internally, in this format (pass its contents to ITSMRouterAgent, do not
+show this raw block to the user):
+- COMPONENT: [Planning Book | Forecast Model | CVC | Planning Area | BW Feed | Consensus Lock]
+- ROOT_CAUSE: [one clear sentence with specific evidence]
+- VERIFICATION: [numbered steps]
+- FIX_STEPS: [numbered steps]
+- FIX_OWNER: [FTS | BI-BW | MDM | ESCALATE]
+- CONFIDENCE: [High | Medium | Low]
+- ERROR_PATTERN: [short keyword phrase, e.g. "CVC characteristic value combination
+  missing new material", "forecast model MAPE MAD"]
+
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
+Return its result verbatim, exactly once.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["ITSMRouterAgent"]
+        },
+
+        # ================================================================
+        # AGENT: Supply Network Planning (SNP) Diagnostics Agent
+        # ================================================================
+        {
+            "name": "SNPDiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP APO Supply Network Planning issues: heuristic runs, deployment,
+TLB (Transport Load Builder), the alert monitor, transportation lanes, capacity,
+and quota arrangements.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_context": {
+                            "type": "string",
+                            "description": "The full incident text or context package to diagnose."
+                        }
+                    },
+                    "required": ["incident_context"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP APO Supply Network Planning diagnostic agent. Diagnostic
+approach:
+1. Identify the specific SNP component involved (heuristic run, deployment, TLB,
+   alert monitor, transportation lane, capacity, quota arrangement).
+2. State the root cause with specific evidence. IMPORTANT: if the log shows "no
+   valid source of supply" or a heuristic run finding no supply orders, you MUST
+   check whether the CIF/transfer chain is intact before concluding it is a pure
+   planning-configuration issue -- state explicitly whether you suspect an upstream
+   CIF/transfer failure (transportation lane / quota arrangement / source of supply
+   missing) even if you are not the one calling CIFAPODiagnosticsAgent (FTSModuleAgent
+   handles that dispatch when chain_risk is Yes).
+3. List ordered verification steps, referencing /SAPAPO/AMON1, /SAPAPO/RRP3,
+   /SAPAPO/SNPRUN as relevant.
+4. State fix steps.
+5. Determine fix_owner: FTS | MDM | BASIS | ESCALATE.
+
+Produce, internally, in this format (pass its contents to ITSMRouterAgent, do not
+show this raw block to the user):
+- COMPONENT: [Heuristic Run | Deployment | TLB | Alert Monitor | Transportation Lane | Capacity | Quota Arrangement]
+- ROOT_CAUSE: [one clear sentence with specific evidence]
+- VERIFICATION: [numbered steps]
+- FIX_STEPS: [numbered steps]
+- FIX_OWNER: [FTS | MDM | BASIS | ESCALATE]
+- CONFIDENCE: [High | Medium | Low]
+- ERROR_PATTERN: [short keyword phrase, e.g. "no valid source of supply
+  transportation lane heuristic", "deployment frozen zone safety stock"]
+
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
+Return its result verbatim, exactly once.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["ITSMRouterAgent"]
+        },
+
+        # ================================================================
+        # AGENT: PPDS/PP Diagnostics Agent
+        # ================================================================
+        {
+            "name": "PPDSPPDiagnosticsAgent",
+            "function": {
+                "description": """
+I diagnose SAP PPDS (Production Planning and Detailed Scheduling) and ECC PP
+issues: pegging, production versions, lot-size, scheduling, and the DS
+(Detailed Scheduling) planning board.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_context": {
+                            "type": "string",
+                            "description": "The full incident text or context package to diagnose."
+                        }
+                    },
+                    "required": ["incident_context"]
+                }
+            },
+            "instructions": """
+You are a specialist SAP PPDS/PP diagnostic agent. Diagnostic approach:
+1. Identify whether this is APO PPDS (/SAPAPO/* t-codes, e.g. /SAPAPO/RRP3,
+   /SAPAPO/CDPS0) or ECC PP (CO* t-codes, e.g. CO01, CO02, CO03) -- state which
+   explicitly, since fix ownership differs.
+2. Identify the specific component involved (pegging, production version,
+   lot-size, scheduling, DS board).
+3. State the root cause with specific evidence.
+4. List ordered verification steps.
+5. State fix steps.
+6. Determine fix_owner: FTS | MDM | WRICEF | ESCALATE.
+
+Produce, internally, in this format (pass its contents to ITSMRouterAgent, do not
+show this raw block to the user):
+- COMPONENT: [APO PPDS Pegging | APO PPDS Scheduling | ECC PP Production Version | ECC PP Lot-Size | DS Board]
+- ROOT_CAUSE: [one clear sentence with specific evidence]
+- VERIFICATION: [numbered steps]
+- FIX_STEPS: [numbered steps]
+- FIX_OWNER: [FTS | MDM | WRICEF | ESCALATE]
+- CONFIDENCE: [High | Medium | Low]
+- ERROR_PATTERN: [short keyword phrase, e.g. "production version validity lot
+  size", "pegging planned order not covered"]
+
+Then call ITSMRouterAgent with diagnosis_summary, fix_owner, and error_pattern.
+Return its result verbatim, exactly once.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["ITSMRouterAgent"]
+        },
+
+        # ================================================================
+        # AGENT: ITSM Router Agent -- final formatter, uses coded tools
+        # ================================================================
+        {
+            "name": "ITSMRouterAgent",
+            "function": {
+                "description": """
+I produce the final SAP L1.5 diagnostic result card: I look up the exact ITSM
+queue for a fix_owner and the relevant SAP Notes for an error_pattern, then format
+everything into one final structured output.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "diagnosis_summary": {
+                            "type": "string",
+                            "description": "The COMPONENT/ROOT_CAUSE/VERIFICATION/FIX_STEPS/CONFIDENCE block from the calling specialist agent."
+                        },
+                        "fix_owner": {
+                            "type": "string",
+                            "description": "The fix owner tag from the specialist agent, e.g. FTS, MDM, BASIS, BI-BW, WRICEF, ESCALATE."
+                        },
+                        "error_pattern": {
+                            "type": "string",
+                            "description": "The short keyword phrase describing the symptom/error signature, used to look up relevant SAP Notes."
+                        }
+                    },
+                    "required": ["diagnosis_summary", "fix_owner", "error_pattern"]
+                }
+            },
+            "instructions": """
+You are the ITSM routing specialist for the SAP L1.5 hub. Call ITSMQueueLookupTool
+with fix_owner, then call SAPNoteLookupTool with error_pattern. Using their results
+plus the diagnosis_summary, return your output in EXACTLY this template, verbatim,
+ONCE -- do not repeat it, do not call either tool more than once:
+
+SAP L1.5 DIAGNOSTIC RESULT
+COMPONENT       : [from diagnosis_summary]
+ROOT CAUSE      : [from diagnosis_summary]
+CONFIDENCE      : [from diagnosis_summary]
+----------------------------------------
+ITSM QUEUE      : [from ITSMQueueLookupTool]
+TEAM            : [from ITSMQueueLookupTool]
+----------------------------------------
+VERIFICATION STEPS:
+[numbered list from diagnosis_summary]
+----------------------------------------
+FIX STEPS:
+[numbered list from diagnosis_summary]
+----------------------------------------
+SAP NOTES       : [from SAPNoteLookupTool -- note numbers, descriptions, components]
+----------------------------------------
+ESCALATION      : [if unresolved, contact -- from ITSMQueueLookupTool notes]
+""" ${sap_domain_preamble},
+            "tools": ["ITSMQueueLookupTool", "SAPNoteLookupTool"]
+        },
+
+        # ================================================================
+        # CODED TOOL: ITSM Queue Lookup
+        # ================================================================
+        {
+            "name": "ITSMQueueLookupTool",
+            "function": {
+                "description": "Looks up the exact ITSM assignment group and team name for a given fix_owner tag. Deterministic lookup, no LLM involved.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fix_owner": {
+                            "type": "string",
+                            "description": "The fix owner tag. One of: FTS, MDM, OTC, ICO, LEX-WH, LEX-TM, BI, BW, SECURITY, BASIS, WRICEF, ESCALATE (loose synonyms are also accepted and normalized)."
+                        }
+                    },
+                    "required": ["fix_owner"]
+                }
+            },
+            "class": "coded_tools.sap_l15.itsm_queue_lookup.ITSMQueueLookupTool"
+        },
+
+        # ================================================================
+        # CODED TOOL: SAP Note Lookup
+        # ================================================================
+        {
+            "name": "SAPNoteLookupTool",
+            "function": {
+                "description": "Fuzzy keyword-matches an error_pattern against a demo dictionary of SAP Notes and returns the matching notes. Deterministic lookup, no LLM, no external API.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "error_pattern": {
+                            "type": "string",
+                            "description": "A short keyword phrase describing the symptom or error signature to match against known SAP Notes."
+                        }
+                    },
+                    "required": ["error_pattern"]
+                }
+            },
+            "class": "coded_tools.sap_l15.sap_note_lookup.SAPNoteLookupTool"
+        }
+    ]
+}

@@ -38,6 +38,10 @@
     # SAP FTS L3 Diagnostic Assistant
     "fts/fts_diagnostic_assistant.hocon": true,
 
+    # SAP L1.5 multi-agent diagnostic hub (Tier 1/2 + Tier 3 FTS specialists)
+    "sap_l15_hub/sap_l15_hub.hocon": true,
+    "sap_l15_hub/fts/fts_agents.hocon": true,
+
     # Currently we list each hocon file we want to serve as a key with a boolean value.
     # Eventually we might have a dictionary value with server specifications for each.
 

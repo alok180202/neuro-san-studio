@@ -1,0 +1,403 @@
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# The schema specifications for this file are documented here:
+# https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md
+#
+# SAP L1.5 Diagnostic Hub -- Tier 1 (intake/triage) + Tier 2 (module ownership).
+# Tier 3 (deep FTS/APO diagnostics) lives in fts/fts_agents.hocon and is reached
+# from ConsultorAgent via the external-agent reference "/sap_l15_hub/fts/fts_agents",
+# whose front-man is FTSModuleAgent. Cross-file agent calls in neuro-san can only
+# reach the front-man of another registered network (not an arbitrary named agent
+# inside it), which is why FTSModuleAgent -- despite being conceptually "Tier 2" --
+# physically lives alongside the Tier 3 specialists it dispatches to by name.
+
+{
+    "metadata": {
+        "description": "SAP L1.5 multi-agent diagnostic hub. Triages any SAP support ticket -- automated alerts, access requests, or narrative incidents -- across APO/SCM, ECC, integration, warehouse, transportation, BI, security, and Basis, and routes it to the correct owning team with a structured result card.",
+        "tags": ["sap", "diagnostics", "itsm", "industry", "l1.5"],
+        "sample_queries": [
+            "SNP heuristic run /SAPAPO/SNPRUN failed for plant 1101. Log shows: no valid source of supply for material 7100345987. Deployment run also failed overnight.",
+            "Sales order cannot be created for customer C-10045. Error: customer credit limit exceeded. VA01 shows hard block.",
+            "User JSMITH cannot access transaction ME53N. SU53 shows authorization object M_EINK_BSA missing.",
+        ]
+    },
+
+    include "config/llm_config.hocon",
+    include "registries/sap_l15_hub/common_defs.hocon",
+
+    # Default max_execution_seconds is 300s PER AGENT, and a front-man's own execution
+    # window includes waiting on its entire downstream chain. This network's deepest
+    # path is 6 sequential LLM hops (Intake -> TicketAnalysis -> Consultor -> FTSModule
+    # -> a specialist -> ITSMRouterAgent -> 2 coded tools), which can exceed 300s
+    # cumulatively against a "lite" fallback model. Raised here the same way
+    # registries/industry/macys.hocon does for its own deep AAOSA chains.
+    "max_execution_seconds": 900,
+
+    "tools": [
+        # ================================================================
+        # TIER 1 -- AGENT 1: L1.5 SAP Intake Agent -- Front-Man / Orchestrator
+        # ================================================================
+        {
+            "name": "L15SAPIntakeAgent",
+            "function": {
+                "description": """
+I am the SAP L1.5 Diagnostic Hub entry point.
+I accept any SAP support ticket -- automated system notifications, access requests,
+or narrative incident descriptions -- classify it, and route it to the right
+downstream path. Submit your ticket text, alert, or incident description to begin.
+"""
+            },
+            "instructions": """
+You are the SAP L1.5 Intake Front-Man. Your ONLY job is to classify the incoming
+input into exactly ONE of three categories, state the classification and your
+reason for it, and then route accordingly. Do not diagnose anything yourself.
+
+CATEGORY A -- AUTOMATED NOTIFICATION:
+Terse, system-generated monitoring output with no human elaboration: a bare batch-job
+failure alert, an APO alert-monitor notification, or a monitoring email forward, where
+the entire message IS the raw system event (e.g. "Job ZSNP_RUN cancelled in client 100"
+with nothing else). Route directly to FTSModuleAgent (tool "/sap_l15_hub/fts/fts_agents"),
+skipping TicketAnalysisAgent and ConsultorAgent entirely.
+NOTE: A message that narrates an incident -- describes symptoms, business impact, what
+was checked, log excerpts, or multiple related failures -- is NOT Category A even if it
+mentions a batch job or APO run. That is Category C.
+
+CATEGORY B -- ACCESS REQUEST:
+Requests to grant/provide access, unlock a user, reset a password, or reports of an
+SU53-style authorization failure ("please provide access", "cannot access transaction
+X", "SU53 shows ... missing"). Route directly to SecurityModuleAgent, skipping
+TicketAnalysisAgent and ConsultorAgent entirely.
+
+CATEGORY C -- EVERYTHING ELSE:
+Incidents, data mismatches, config questions, or any narrative description of a
+problem (including ones that reference batch jobs, APO, or CIF, as long as they
+describe symptoms/impact rather than just forwarding a raw system alert). Route to
+TicketAnalysisAgent first.
+
+Before routing, output one line: "CLASSIFICATION: [A|B|C] -- [one-sentence reason]".
+Then call exactly one downstream tool as directed above.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["TicketAnalysisAgent", "SecurityModuleAgent", "/sap_l15_hub/fts/fts_agents"]
+        },
+
+        # ================================================================
+        # TIER 1 -- AGENT 2: Ticket Analysis Agent
+        # ================================================================
+        {
+            "name": "TicketAnalysisAgent",
+            "function": {
+                "description": """
+I extract structured fields from a raw SAP incident description. I do not diagnose
+or recommend fixes -- I only produce a structured field list for downstream ownership
+decisions.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_description": {
+                            "type": "string",
+                            "description": "The full incident text, classification, and reason handed off by L15SAPIntakeAgent."
+                        }
+                    },
+                    "required": ["incident_description"]
+                }
+            },
+            "instructions": """
+You are the Ticket Analysis specialist. Work out internally (do not print this to
+the user) ONLY the following structured fields from the incident text -- do not
+diagnose, do not guess a root cause, do not recommend a fix:
+
+TICKET_TYPE   : [Incident | Data Mismatch | Config Question]
+SAP_SYSTEM    : [ECC | APO/SCM | BW | EWM | TM | Unknown]
+PROCESS_AREA  : [DP | SNP | PPDS | PP | CIF | MM | SD | WM/EWM | TM | BW/BI | Security | Basis | Other]
+SYMPTOM       : [one clear sentence describing what is observed]
+SAP_OBJECTS   : [materials, plants, orders, IDoc types, queue names, t-codes mentioned]
+ERROR_TEXT    : [exact error message or log excerpt, verbatim, if present]
+URGENCY       : [High | Medium | Low]
+CHAIN_RISK    : [Yes | No -- Yes if the symptom could stem from an upstream system
+                 failure, e.g. a planning-side symptom that could actually be caused
+                 by a failed CIF/qRFC transfer]
+
+These eight fields are your own private reasoning for deciding what to pass to
+ConsultorAgent -- they are NOT your final answer and must not appear in it. Call
+ConsultorAgent with this structured block. YOUR FINAL RESPONSE TO THE CALLER MUST
+BE ONLY ConsultorAgent's returned response, verbatim -- nothing before it, nothing
+after it, and do not print the eight fields above in that final response.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": ["ConsultorAgent"]
+        },
+
+        # ================================================================
+        # TIER 2 -- AGENT 3: Consultor Agent -- module ownership decision
+        # ================================================================
+        {
+            "name": "ConsultorAgent",
+            "function": {
+                "description": """
+I decide which SAP module team owns a ticket based on its structured analysis, then
+route it to the correct module agent.
+""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ticket_analysis": {
+                            "type": "string",
+                            "description": "The structured field block (TICKET_TYPE, SAP_SYSTEM, PROCESS_AREA, SYMPTOM, SAP_OBJECTS, ERROR_TEXT, URGENCY, CHAIN_RISK) produced by TicketAnalysisAgent."
+                        }
+                    },
+                    "required": ["ticket_analysis"]
+                }
+            },
+            "instructions": """
+You are the Consultor Agent. Decide module ownership from the structured ticket
+analysis using these rules, in order:
+
+- FTS owns: DP, SNP, PPDS, PP, or CIF process areas, or anything APO/planning/
+  CIF/qRFC-related. Route to FTSModuleAgent (tool "/sap_l15_hub/fts/fts_agents").
+- MDM owns: "wrong data at source" issues -- data that is incorrect where it lives
+  (NOT a failed transfer between systems; that is FTS/CIF). Route to MDMModuleAgent.
+- OTC owns: SD/sales/ATP/billing/credit issues. Route to OTCModuleAgent.
+- ICO owns: cross-company stock transport orders (STOs) or PO/SO intercompany pairs.
+  Route to ICOModuleAgent.
+- LEX-Warehouse owns: picking/packing/EWM issues. Route to LEXWarehouseModuleAgent.
+- LEX-TM owns: freight/shipments/carrier/transportation issues. Route to
+  LEXTMModuleAgent.
+- BI owns: report/BW/HANA issues. Distinguish a BW data-feed problem from a BI
+  display/report problem in your reasoning. Route to BIReportModuleAgent.
+- Basis owns: broad performance/RFC/transport/kernel infrastructure issues. Route
+  to BasisModuleAgent.
+- Security owns: authorization/role/SU53 issues (should be rare here since
+  L15SAPIntakeAgent already routes clear access requests directly).
+
+If CHAIN_RISK is "Yes", explicitly note the possible upstream chain relationship in
+your ownership reasoning (this matters most for FTS routing -- FTSModuleAgent needs
+to know if the symptom might actually be a CIF/transfer failure).
+
+Call exactly ONE module agent tool -- the single best-owning module. Do not call
+more than one.
+
+Before calling that tool, work out internally (do not print this to the user):
+MODULE_OWNER    : [module name]
+OWNERSHIP_REASON: [one to two sentences]
+CONTEXT_PACKAGE : [the full structured ticket analysis, passed through unchanged]
+
+Then call the correct module agent tool with that context package (and, if routing
+to FTSModuleAgent, also pass PROCESS_AREA and CHAIN_RISK as separate values).
+
+YOUR FINAL RESPONSE TO THE CALLER MUST BE ONLY the module agent's returned result
+card, verbatim -- nothing before it, nothing after it. Do NOT print the
+MODULE_OWNER / OWNERSHIP_REASON / CONTEXT_PACKAGE lines in your final response;
+those are your own private reasoning, not part of the answer.
+""" ${sap_domain_preamble} ${pass_through_once_guard},
+            "tools": [
+                "MDMModuleAgent", "OTCModuleAgent", "ICOModuleAgent",
+                "LEXWarehouseModuleAgent", "LEXTMModuleAgent", "BIReportModuleAgent",
+                "SecurityModuleAgent", "BasisModuleAgent",
+                "/sap_l15_hub/fts/fts_agents"
+            ]
+        },
+
+        # ================================================================
+        # TIER 2 -- THIN MODULE ROUTING AGENTS (no deep diagnosis -- that's FTS-only)
+        # ================================================================
+        {
+            "name": "MDMModuleAgent",
+            "function": {
+                "description": "Confirms MDM (Master Data Management) ownership for wrong-data-at-source issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the MDM Module Agent. Confirm this is a master-data-at-source issue, list
+2-3 starting transaction codes to check (MM03, BP, MDG workflow status), and output
+this result card -- nothing else:
+
+MODULE          : MDM
+ITSM QUEUE      : MDM-MATERIAL-SUPPORT
+TEAM            : Master Data Management Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "OTCModuleAgent",
+            "function": {
+                "description": "Confirms OTC (Order to Cash) ownership for SD/sales/ATP/billing/credit issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the OTC Module Agent. Confirm this is an SD/sales/ATP/billing/credit issue,
+list 2-3 starting transaction codes to check (VA02/VA03, VL03N, VF03, FD32), and
+output this result card -- nothing else:
+
+MODULE          : OTC
+ITSM QUEUE      : OTC-ORDER-SUPPORT
+TEAM            : Order to Cash Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "ICOModuleAgent",
+            "function": {
+                "description": "Confirms ICO (Intercompany) ownership for cross-company STO/PO-SO pair issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the ICO Module Agent. Confirm this is a cross-company STO or PO/SO
+intercompany pairing issue, list 2-3 starting transaction codes to check (ME23N,
+VA03, MB51), and output this result card -- nothing else:
+
+MODULE          : ICO
+ITSM QUEUE      : ICO-INTERCO-SUPPORT
+TEAM            : Intercompany Operations Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "LEXWarehouseModuleAgent",
+            "function": {
+                "description": "Confirms LEX-Warehouse ownership for picking/packing/EWM issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the LEX-Warehouse Module Agent. Confirm this is a picking/packing/EWM
+issue, list 2-3 starting transaction codes to check (LT04, LT12, LX01), and output
+this result card -- nothing else:
+
+MODULE          : LEX-Warehouse
+ITSM QUEUE      : LEX-WAREHOUSE-SUPPORT
+TEAM            : Warehouse Operations Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "LEXTMModuleAgent",
+            "function": {
+                "description": "Confirms LEX-TM ownership for freight/shipment/carrier/transportation issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the LEX-TM Module Agent. Confirm this is a freight/shipment/carrier
+transportation issue, list 2-3 starting transaction codes to check
+(/SCMTMS/MON_FO, VT01N), and output this result card -- nothing else:
+
+MODULE          : LEX-TM
+ITSM QUEUE      : LEX-TM-SUPPORT
+TEAM            : Transportation Management Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "BIReportModuleAgent",
+            "function": {
+                "description": "Confirms BI/BW ownership for report/BW/HANA issues and produces a short routing result card, distinguishing BW data-feed problems from BI display problems.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the BI/Report Module Agent. Determine whether this is a BW data-feed
+problem or a BI display/report problem, list 2-3 starting transaction codes to
+check (RSA1, RSPC, ST05), and output this result card -- nothing else. Use the
+BW-HANA-SUPPORT queue if it is a data-feed problem, otherwise BI-REPORTING-SUPPORT:
+
+MODULE          : BI/BW
+ITSM QUEUE      : [BI-REPORTING-SUPPORT | BW-HANA-SUPPORT]
+TEAM            : [BI Reporting Team | BW/HANA Team]
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "SecurityModuleAgent",
+            "function": {
+                "description": "Confirms Security ownership for authorization/role/access issues and produces a short routing result card. Reached either directly (Category B access requests) or via ConsultorAgent.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The raw access-request text or structured ticket context."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the Security Module Agent. Confirm this is an authorization/role/access
+issue, list 2-3 starting transaction codes to check (SU53, SU01, SUIM), and output
+this result card -- nothing else:
+
+MODULE          : Security
+ITSM QUEUE      : SAP-SECURITY-SUPPORT
+TEAM            : SAP Security Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        },
+        {
+            "name": "BasisModuleAgent",
+            "function": {
+                "description": "Confirms Basis ownership for broad performance/RFC/transport/kernel infrastructure issues and produces a short routing result card.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                    },
+                    "required": ["context_package"]
+                }
+            },
+            "instructions": """
+You are the Basis Module Agent. Confirm this is a broad performance/RFC/transport/
+kernel infrastructure issue, list 2-3 starting transaction codes to check (SM50,
+SM66, ST05, SM59), and output this result card -- nothing else:
+
+MODULE          : Basis
+ITSM QUEUE      : SAP-BASIS-SUPPORT
+TEAM            : SAP Basis Team
+STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+""" ${sap_domain_preamble}
+        }
+    ]
+}
