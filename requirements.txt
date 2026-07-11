@@ -29,6 +29,11 @@ langchain-openai>=1.1.9,<2.0
 langchain-anthropic>=1.4.3,<2.0
 langchain-google-genai>=4.2.2,<5.0
 
+# Mistral is not a neuro-san built-in provider (needs the full LangChain class
+# path) -- used as the 4th fallback in config/developer_llm_config.hocon for
+# the SAP L1.5 hub once OpenAI/Anthropic/Gemini are all unavailable.
+langchain-mistralai==1.1.2
+
 # For rich logging
 rich>=14.2.0
 
