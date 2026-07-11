@@ -207,3 +207,7 @@ memory/
 
 # test local only
 registries/manifest.hocon.test
+
+# Local-only historical ticket data for the SAP L1.5 hub's incident-similarity lookup tool.
+# Real (scrubbed) ticket content -- keep out of source control.
+coded_tools/sap_l15/data/

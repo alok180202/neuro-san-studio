@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #faf7f2;
+  --surface: #ffffff;
+  --surface-alt: #f3ede3;
+  --fg: #2a231c;
+  --fg-muted: #6b6055;
+  --border: #e3d9c8;
+  --accent: #b5563c;
+  --accent-fg: #ffffff;
+  --accent-soft: #f1e0d8;
+  --success: #2f7d4f;
+  --success-bg: #e3f2e6;
+  --warning: #8a6112;
+  --warning-bg: #fbeecb;
+  --danger: #b3392f;
+  --danger-bg: #fbe3e0;
+}
+
+:root.dark {
+  --bg: #211c17;
+  --surface: #2b2520;
+  --surface-alt: #362f28;
+  --fg: #f2ece2;
+  --fg-muted: #b3a696;
+  --border: #4a4136;
+  --accent: #d97a5f;
+  --accent-fg: #211c17;
+  --accent-soft: #4a352c;
+  --success: #6cc696;
+  --success-bg: #1f3a2a;
+  --warning: #e0b355;
+  --warning-bg: #3d3018;
+  --danger: #e2776a;
+  --danger-bg: #3d211d;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-alt: var(--surface-alt);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+::selection {
+  background-color: var(--accent-soft);
+  color: var(--fg);
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.28s ease-out;
+}
+
+@keyframes fade-out-shrink {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* react-flow chrome -- match the app's surface/border tokens instead of the
+   library's default light-mode-only styling. */
+.react-flow {
+  background: transparent;
+}
+
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--surface-alt);
+  color: var(--fg);
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__attribution {
+  display: none;
+}

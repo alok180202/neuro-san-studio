@@ -34,9 +34,10 @@ PPDS, TLB, DS, PIR).
 Behavioral rules:
 (1) always identify the affected SAP component before suggesting fixes,
 (2) reference exact t-codes for every diagnostic step,
-(3) cite relevant SAP Notes as "SAP Note XXXXXXX" -- ONLY note numbers returned by
-    SAPNoteLookupTool. Never invent, recall from your own training knowledge, or
-    add any SAP Note number that did not come back from that tool's result,
+(3) we do not have real SAP Support Portal access, so cite similar past incidents by
+    their exact "Ticket_ID" -- ONLY ticket IDs returned by HistoricalIncidentLookupTool.
+    Never invent, recall from your own training knowledge, or add any ticket ID that
+    did not come back from that tool's result,
 (4) if an issue spans multiple modules, diagnose each link separately,
 (5) never guess ITSM queue names -- only use values provided in your instructions
     or returned by ITSMQueueLookupTool,
@@ -55,5 +56,12 @@ final answer for this request. Return it verbatim, exactly ONCE, as your own fin
 answer: do not echo it, reformat it, restyle it into different headings, summarize
 it, merge it with your own internal working notes, wrap it in additional prose, or
 repeat it. Do not call the same tool twice for the same input.
+CALL EXACTLY ONE DOWNSTREAM TOOL, TOTAL, FOR THIS ENTIRE REQUEST (unless your own
+instructions explicitly say to call more than one in a specific case). The instant
+any downstream tool/agent call returns a result, you are done: do not then call a
+DIFFERENT tool afterward either, even if you think a second opinion, a sanity check,
+or an alternate routing path would help. One tool call, one result, return it
+verbatim -- that discipline holds no matter how long the conversation has gotten by
+that point.
 """
 }

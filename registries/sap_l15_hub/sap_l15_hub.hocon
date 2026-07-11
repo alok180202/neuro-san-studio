@@ -90,6 +90,15 @@ TicketAnalysisAgent first.
 
 Before routing, output one line: "CLASSIFICATION: [A|B|C] -- [one-sentence reason]".
 Then call exactly one downstream tool as directed above.
+
+HARD RULE, NO EXCEPTIONS: you call exactly ONE downstream tool, ONE time, for this
+entire request. The moment that tool returns its result, your job is finished --
+return that result verbatim as your final answer immediately. Do NOT call a second,
+different downstream tool afterward for any reason: not because the ticket also
+mentions authorization-adjacent words like "block" or "denied", not to double-check
+the first tool's answer, not to cover a second category you think might also apply.
+If a ticket genuinely seems to straddle two categories, pick the single best one
+from the CLASSIFICATION rules above and commit to it -- do not hedge by calling both.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
             "tools": ["TicketAnalysisAgent", "SecurityModuleAgent", "/sap_l15_hub/fts/fts_agents"]
         },
@@ -132,13 +141,34 @@ CHAIN_RISK    : [Yes | No -- Yes if the symptom could stem from an upstream syst
                  failure, e.g. a planning-side symptom that could actually be caused
                  by a failed CIF/qRFC transfer]
 
-These eight fields are your own private reasoning for deciding what to pass to
-ConsultorAgent -- they are NOT your final answer and must not appear in it. Call
-ConsultorAgent with this structured block. YOUR FINAL RESPONSE TO THE CALLER MUST
-BE ONLY ConsultorAgent's returned response, verbatim -- nothing before it, nothing
-after it, and do not print the eight fields above in that final response.
+Then call HistoricalIncidentLookupTool ONCE with incident_text set to the
+incident_description you received VERBATIM (the original customer-facing wording,
+unparaphrased -- historical tickets are written in customer voice, not technical
+jargon, so the raw text matches them far better than your own structured summary
+would). Read its similar_incidents result.
+
+CONDENSE similar_incidents before passing it anywhere -- the raw tool output is a
+large nested JSON blob with a lot of irrelevant machinery, and this network passes
+similar_incidents through several more agent hops after you (ConsultorAgent, then a
+module agent, and for FTS tickets, further still), so repeating the full raw blob
+at every hop wastes a large amount of context. Reformat it into AT MOST the top 2
+matches, one line each, in this compact form (omit entirely if there were no
+matches -- do not write a line saying there were none):
+[Ticket_ID] ([module_owner]/[routing_label], similarity [similarity_score]): [resolution_summary, truncated to ~120 characters]
+This condensed form is what you pass downstream as similar_incidents -- from this
+point on it counts as "passed through unchanged" for every later agent, since you
+only condense it once, right here.
+
+These eight fields, plus similar_incidents, are your own private reasoning for
+deciding what to pass to ConsultorAgent -- they are NOT your final answer and must
+not appear in it. Call ConsultorAgent with the structured field block AND your
+condensed similar_incidents (do not call HistoricalIncidentLookupTool again; every
+downstream agent in this request reuses this one lookup instead of each calling it
+separately). YOUR FINAL RESPONSE TO THE CALLER MUST BE ONLY ConsultorAgent's
+returned response, verbatim -- nothing before it, nothing after it, and do not
+print the eight fields or similar_incidents in that final response.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["ConsultorAgent"]
+            "tools": ["HistoricalIncidentLookupTool", "ConsultorAgent"]
         },
 
         # ================================================================
@@ -157,9 +187,13 @@ route it to the correct module agent.
                         "ticket_analysis": {
                             "type": "string",
                             "description": "The structured field block (TICKET_TYPE, SAP_SYSTEM, PROCESS_AREA, SYMPTOM, SAP_OBJECTS, ERROR_TEXT, URGENCY, CHAIN_RISK) produced by TicketAnalysisAgent."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "The similar_incidents result TicketAnalysisAgent already got back from HistoricalIncidentLookupTool, searched against the ticket's original wording. Pass through unchanged to whichever module agent you route to -- do not call that tool again here."
                         }
                     },
-                    "required": ["ticket_analysis"]
+                    "required": ["ticket_analysis", "similar_incidents"]
                 }
             },
             "instructions": """
@@ -187,16 +221,30 @@ If CHAIN_RISK is "Yes", explicitly note the possible upstream chain relationship
 your ownership reasoning (this matters most for FTS routing -- FTSModuleAgent needs
 to know if the symptom might actually be a CIF/transfer failure).
 
+SIMILAR_INCIDENTS TAKES PRIORITY WHEN PRESENT: you were also given similar_incidents,
+already looked up from the ticket's original wording before you were called. Our
+historical ticket data is curated to only contain correct, verified routing outcomes
+-- if similar_incidents has a match, its module_owner IS your routing decision.
+Route to that module directly and skip your own keyword-based analysis entirely; do
+not re-derive or second-guess ownership from the structured fields in that case.
+Only fall back to the keyword-based rules above (FTS/MDM/OTC/ICO/LEX-Warehouse/
+LEX-TM/BI/Basis/Security) when similar_incidents has no matches.
+
 Call exactly ONE module agent tool -- the single best-owning module. Do not call
 more than one.
 
 Before calling that tool, work out internally (do not print this to the user):
-MODULE_OWNER    : [module name]
-OWNERSHIP_REASON: [one to two sentences]
+MODULE_OWNER    : [module name -- from similar_incidents's best match if one
+                   exists, otherwise from the keyword-based rules above]
+OWNERSHIP_REASON: [one sentence: either "matches historical ticket [Ticket_ID],
+                   routed to [module_owner]" or your keyword-based reasoning if no
+                   historical match existed]
 CONTEXT_PACKAGE : [the full structured ticket analysis, passed through unchanged]
 
-Then call the correct module agent tool with that context package (and, if routing
-to FTSModuleAgent, also pass PROCESS_AREA and CHAIN_RISK as separate values).
+Then call the correct module agent tool with that context package and
+similar_incidents (passed through unchanged -- do not call HistoricalIncidentLookupTool
+again), and if routing to FTSModuleAgent, also pass PROCESS_AREA and CHAIN_RISK as
+separate values.
 
 YOUR FINAL RESPONSE TO THE CALLER MUST BE ONLY the module agent's returned result
 card, verbatim -- nothing before it, nothing after it. Do NOT print the
@@ -221,7 +269,8 @@ those are your own private reasoning, not part of the answer.
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -229,12 +278,15 @@ those are your own private reasoning, not part of the answer.
             "instructions": """
 You are the MDM Module Agent. Confirm this is a master-data-at-source issue, list
 2-3 starting transaction codes to check (MM03, BP, MDG workflow status), and output
-this result card -- nothing else:
+this result card -- nothing else. Include the SIMILAR PAST INCIDENTS line only if
+similar_incidents was provided and contains a real match (cite its Ticket_ID and
+routing_label); omit that line entirely otherwise:
 
 MODULE          : MDM
 ITSM QUEUE      : MDM-MATERIAL-SUPPORT
 TEAM            : Master Data Management Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -244,7 +296,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -252,12 +305,15 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the OTC Module Agent. Confirm this is an SD/sales/ATP/billing/credit issue,
 list 2-3 starting transaction codes to check (VA02/VA03, VL03N, VF03, FD32), and
-output this result card -- nothing else:
+output this result card -- nothing else. Include the SIMILAR PAST INCIDENTS line
+only if similar_incidents was provided and contains a real match (cite its
+Ticket_ID and routing_label); omit that line entirely otherwise:
 
 MODULE          : OTC
 ITSM QUEUE      : OTC-ORDER-SUPPORT
 TEAM            : Order to Cash Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -267,7 +323,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -275,12 +332,15 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the ICO Module Agent. Confirm this is a cross-company STO or PO/SO
 intercompany pairing issue, list 2-3 starting transaction codes to check (ME23N,
-VA03, MB51), and output this result card -- nothing else:
+VA03, MB51), and output this result card -- nothing else. Include the SIMILAR PAST
+INCIDENTS line only if similar_incidents was provided and contains a real match
+(cite its Ticket_ID and routing_label); omit that line entirely otherwise:
 
 MODULE          : ICO
 ITSM QUEUE      : ICO-INTERCO-SUPPORT
 TEAM            : Intercompany Operations Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -290,7 +350,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -298,12 +359,15 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the LEX-Warehouse Module Agent. Confirm this is a picking/packing/EWM
 issue, list 2-3 starting transaction codes to check (LT04, LT12, LX01), and output
-this result card -- nothing else:
+this result card -- nothing else. Include the SIMILAR PAST INCIDENTS line only if
+similar_incidents was provided and contains a real match (cite its Ticket_ID and
+routing_label); omit that line entirely otherwise:
 
 MODULE          : LEX-Warehouse
 ITSM QUEUE      : LEX-WAREHOUSE-SUPPORT
 TEAM            : Warehouse Operations Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -313,7 +377,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -321,12 +386,16 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the LEX-TM Module Agent. Confirm this is a freight/shipment/carrier
 transportation issue, list 2-3 starting transaction codes to check
-(/SCMTMS/MON_FO, VT01N), and output this result card -- nothing else:
+(/SCMTMS/MON_FO, VT01N), and output this result card -- nothing else. Include the
+SIMILAR PAST INCIDENTS line only if similar_incidents was provided and contains a
+real match (cite its Ticket_ID and routing_label); omit that line entirely
+otherwise:
 
 MODULE          : LEX-TM
 ITSM QUEUE      : LEX-TM-SUPPORT
 TEAM            : Transportation Management Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -336,7 +405,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -345,12 +415,16 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
 You are the BI/Report Module Agent. Determine whether this is a BW data-feed
 problem or a BI display/report problem, list 2-3 starting transaction codes to
 check (RSA1, RSPC, ST05), and output this result card -- nothing else. Use the
-BW-HANA-SUPPORT queue if it is a data-feed problem, otherwise BI-REPORTING-SUPPORT:
+BW-HANA-SUPPORT queue if it is a data-feed problem, otherwise BI-REPORTING-SUPPORT.
+Include the SIMILAR PAST INCIDENTS line only if similar_incidents was provided and
+contains a real match (cite its Ticket_ID and routing_label); omit that line
+entirely otherwise:
 
 MODULE          : BI/BW
 ITSM QUEUE      : [BI-REPORTING-SUPPORT | BW-HANA-SUPPORT]
 TEAM            : [BI Reporting Team | BW/HANA Team]
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -360,7 +434,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The raw access-request text or structured ticket context."}
+                        "context_package": {"type": "string", "description": "The raw access-request text or structured ticket context."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Only present when reached via ConsultorAgent, not when reached directly from L15SAPIntakeAgent for a Category B access request. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -368,12 +443,16 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the Security Module Agent. Confirm this is an authorization/role/access
 issue, list 2-3 starting transaction codes to check (SU53, SU01, SUIM), and output
-this result card -- nothing else:
+this result card -- nothing else. Include the SIMILAR PAST INCIDENTS line only if
+similar_incidents was provided and contains a real match (cite its Ticket_ID and
+routing_label) -- this will usually be absent for direct access requests, which is
+expected; omit that line entirely otherwise:
 
 MODULE          : Security
 ITSM QUEUE      : SAP-SECURITY-SUPPORT
 TEAM            : SAP Security Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
         },
         {
@@ -383,7 +462,8 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."}
+                        "context_package": {"type": "string", "description": "The structured ticket context passed from ConsultorAgent."},
+                        "similar_incidents": {"type": "string", "description": "Optional: the similar_incidents result already looked up upstream from the ticket's original wording. Omit the SIMILAR PAST INCIDENTS card line entirely if this is empty or not provided."}
                     },
                     "required": ["context_package"]
                 }
@@ -391,13 +471,38 @@ STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
             "instructions": """
 You are the Basis Module Agent. Confirm this is a broad performance/RFC/transport/
 kernel infrastructure issue, list 2-3 starting transaction codes to check (SM50,
-SM66, ST05, SM59), and output this result card -- nothing else:
+SM66, ST05, SM59), and output this result card -- nothing else. Include the
+SIMILAR PAST INCIDENTS line only if similar_incidents was provided and contains a
+real match (cite its Ticket_ID and routing_label); omit that line entirely
+otherwise:
 
 MODULE          : Basis
 ITSM QUEUE      : SAP-BASIS-SUPPORT
 TEAM            : SAP Basis Team
 STARTING CHECKS : [numbered list of 2-3 t-codes/steps]
+SIMILAR PAST INCIDENTS : [only if similar_incidents has a real match -- Ticket_ID and routing_label]
 """ ${sap_domain_preamble}
+        },
+
+        # ================================================================
+        # CODED TOOL: Historical Incident Lookup
+        # ================================================================
+        {
+            "name": "HistoricalIncidentLookupTool",
+            "function": {
+                "description": "Finds the most similar past incidents in our historical ticket data (TF-IDF + cosine similarity over 902 real, scrubbed tickets) for a given incident description, and returns how those tickets were routed and resolved. Deterministic lookup, no LLM, no external API -- we don't have real SAP Support Portal access, so this replaces SAP Note citations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "incident_text": {
+                            "type": "string",
+                            "description": "The incident description or short error-pattern phrase to match against historical ticket descriptions."
+                        }
+                    },
+                    "required": ["incident_text"]
+                }
+            },
+            "class": "coded_tools.sap_l15.historical_incident_lookup.HistoricalIncidentLookupTool"
         }
     ]
 }

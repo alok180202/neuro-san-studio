@@ -50,6 +50,71 @@ agents without code, this studio handles the orchestration complexity so you can
   <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki: Neuro SAN" /></a>
 </p>
 
+## 🏥 SAP L1.5 Diagnostic Hub — Hackathon Submission
+
+**Participant:** Alok Anand
+
+**Tagline:** From raw SAP support ticket to a routed, evidence-backed diagnostic result card — automatically.
+
+The SAP L1.5 Diagnostic Hub is a multi-agent triage system built on top of Neuro SAN for SAP L1.5 support tickets.
+It accepts any SAP support ticket — a terse automated system alert, an access request, or a narrative incident
+description — classifies it, extracts structured fields, and routes it through the correct chain of specialist
+agents to the owning team. Along the way it cross-references 902 real (scrubbed) historical tickets via a
+deterministic TF-IDF similarity search, treating a strong historical match as authoritative routing/diagnosis
+evidence rather than falling back on generic textbook reasoning alone. The output is a structured result card:
+component, root cause, confidence, ITSM queue/team, verification and fix steps, and cited similar past incidents.
+A purpose-built consultant-facing frontend (`frontend/`) replaces the framework's generic dev UI, visualizing the
+live agent handoff chain as an interactive node graph.
+
+### Architecture: 3 tiers
+
+1. **Tier 1 — Intake & Analysis** (`registries/sap_l15_hub/sap_l15_hub.hocon`)
+   * `L15SAPIntakeAgent` (front-man) classifies every ticket into Category A (automated notification → routes
+     straight to FTS), B (access request → routes straight to Security), or C (everything else → routes to
+     analysis).
+   * `TicketAnalysisAgent` extracts eight structured fields (ticket type, SAP system, process area, symptom,
+     objects, error text, urgency, chain risk) from the raw ticket text, and performs the network's one and only
+     historical-incident lookup (`HistoricalIncidentLookupTool`, TF-IDF + cosine similarity over
+     `coded_tools/sap_l15/data/routing_data_scrubbed.xlsx`), using the ticket's original wording rather than a
+     technical paraphrase.
+
+2. **Tier 2 — Module Ownership** (same file)
+   * `ConsultorAgent` decides which of 9 module agents owns the ticket — treating a strong historical match as
+     authoritative, falling back to keyword-based rules otherwise — and routes to exactly one: `MDMModuleAgent`,
+     `OTCModuleAgent`, `ICOModuleAgent`, `LEXWarehouseModuleAgent`, `LEXTMModuleAgent`, `BIReportModuleAgent`,
+     `SecurityModuleAgent`, `BasisModuleAgent` (thin routing agents that produce a short module card), or
+     `FTSModuleAgent` (the gateway into Tier 3's deep diagnostics).
+
+3. **Tier 3 — FTS Deep Diagnostics** (`registries/sap_l15_hub/fts/fts_agents.hocon`, a nested, independently
+   servable sub-network)
+   * `FTSModuleAgent` dispatches by process area to one of 4 specialists — `DPDiagnosticsAgent`,
+     `SNPDiagnosticsAgent`, `PPDSPPDiagnosticsAgent`, `CIFAPODiagnosticsAgent` — each of which produces a full
+     diagnosis (informed by the historical match threaded down from Tier 1) and calls `ITSMRouterAgent`, which
+     looks up the exact ITSM queue (`ITSMQueueLookupTool`) and formats the final `SAP L1.5 DIAGNOSTIC RESULT` card.
+
+### Run it
+
+Backend (from the repo root, with the venv set up per [Installation](#installation) below and
+`GOOGLE_API_KEY`/`MISTRAL_API_KEY` — or any other supported provider key — set in `.env`):
+
+```bash
+python -m neuro_san_studio run --server-only
+```
+
+Consultant-facing frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) — see [`frontend/README.md`](frontend/README.md) for details.
+The framework's generic nsflow dev UI is also available via `python -m neuro_san_studio run` (without
+`--server-only`), at [http://localhost:4173](http://localhost:4173).
+
+---
+
 ## What is Neuro SAN?
 
 [**Neuro AI system of agent networks (Neuro SAN)**](https://github.com/cognizant-ai-lab/neuro-san) is an open-source,
