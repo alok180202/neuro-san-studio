@@ -66,31 +66,23 @@ component, root cause, confidence, ITSM queue/team, verification and fix steps, 
 A purpose-built consultant-facing frontend (`frontend/`) replaces the framework's generic dev UI, visualizing the
 live agent handoff chain as an interactive node graph.
 
-### Architecture: 3 tiers
+### Where to look
 
-1. **Tier 1 — Intake & Analysis** (`registries/sap_l15_hub/sap_l15_hub.hocon`)
-   * `L15SAPIntakeAgent` (front-man) classifies every ticket into Category A (automated notification → routes
-     straight to FTS), B (access request → routes straight to Security), or C (everything else → routes to
-     analysis).
-   * `TicketAnalysisAgent` extracts eight structured fields (ticket type, SAP system, process area, symptom,
-     objects, error text, urgency, chain risk) from the raw ticket text, and performs the network's one and only
-     historical-incident lookup (`HistoricalIncidentLookupTool`, TF-IDF + cosine similarity over
-     `coded_tools/sap_l15/data/routing_data_scrubbed.xlsx`), using the ticket's original wording rather than a
-     technical paraphrase.
+This is a fork of the full neuro-san-studio framework (required by the submission instructions), so the
+submission-specific work is concentrated in a few paths rather than spread across the whole repo:
 
-2. **Tier 2 — Module Ownership** (same file)
-   * `ConsultorAgent` decides which of 9 module agents owns the ticket — treating a strong historical match as
-     authoritative, falling back to keyword-based rules otherwise — and routes to exactly one: `MDMModuleAgent`,
-     `OTCModuleAgent`, `ICOModuleAgent`, `LEXWarehouseModuleAgent`, `LEXTMModuleAgent`, `BIReportModuleAgent`,
-     `SecurityModuleAgent`, `BasisModuleAgent` (thin routing agents that produce a short module card), or
-     `FTSModuleAgent` (the gateway into Tier 3's deep diagnostics).
+| Path | What's there |
+|---|---|
+| [`registries/sap_l15_hub/`](registries/sap_l15_hub/) | The 3-tier agent network itself (both hocon files) |
+| [`coded_tools/sap_l15/`](coded_tools/sap_l15/) | The historical-incident similarity search and ITSM queue lookup tools |
+| [`frontend/`](frontend/) | The consultant-facing console and live agent-activity graph |
+| [`architecture.md`](architecture.md) | Full architecture writeup with a data-flow diagram |
+| [`summary.md`](summary.md) | Standalone 1–2 page project summary |
 
-3. **Tier 3 — FTS Deep Diagnostics** (`registries/sap_l15_hub/fts/fts_agents.hocon`, a nested, independently
-   servable sub-network)
-   * `FTSModuleAgent` dispatches by process area to one of 4 specialists — `DPDiagnosticsAgent`,
-     `SNPDiagnosticsAgent`, `PPDSPPDiagnosticsAgent`, `CIFAPODiagnosticsAgent` — each of which produces a full
-     diagnosis (informed by the historical match threaded down from Tier 1) and calls `ITSMRouterAgent`, which
-     looks up the exact ITSM queue (`ITSMQueueLookupTool`) and formats the final `SAP L1.5 DIAGNOSTIC RESULT` card.
+### Architecture
+
+See [`architecture.md`](architecture.md) for the full 3-tier breakdown (Intake & Analysis → Module Ownership →
+FTS Deep Diagnostics) and a diagram of how a ticket's data flows from raw text to the final result card.
 
 ### Run it
 
@@ -112,6 +104,57 @@ npm run dev
 Open [http://localhost:5173](http://localhost:5173) — see [`frontend/README.md`](frontend/README.md) for details.
 The framework's generic nsflow dev UI is also available via `python -m neuro_san_studio run` (without
 `--server-only`), at [http://localhost:4173](http://localhost:4173).
+
+### Troubleshooting
+
+* **No LLM responses / the agent hangs or errors immediately.** At least one provider key must be set in
+  `.env`. This project's own fallback chain (`config/developer_llm_config.hocon`) tries OpenAI → Anthropic →
+  Google Gemini → Mistral in order and skips any provider whose key isn't set; it's been validated running on
+  just `GOOGLE_API_KEY` + `MISTRAL_API_KEY`. If Gemini's free tier (500 requests/day) is exhausted mid-demo, it
+  fails fast (`max_retries: 0`) and falls through to Mistral automatically rather than hanging.
+* **`ModuleNotFoundError: No module named 'typer'` (or similar).** The venv isn't activated, or you're invoking
+  the system `python` instead of it — use `./venv/Scripts/python.exe` (Windows) or `venv/bin/python` (macOS/Linux)
+  explicitly if activation isn't sticking in your shell.
+* **`Address already in use` / server won't start on 8080, 4173, or 5173.** Something is already bound to that
+  port — find and stop it, or pick a different one: `--server-http-port` / `--nsflow-port` for the backend/nsflow
+  (`python -m neuro_san_studio run --help`), or `npm run dev -- --port <n>` for the frontend.
+* **`Cannot include file .../registries/generated/manifest.hocon` warning in the server logs.** Harmless, and
+  confirmed harmless, not assumed — verified directly that pyhocon treats a missing `include` target as optional
+  and parses the rest of the manifest normally. That directory is gitignored scaffolding output for the Agent
+  Network Designer / `ns init`, unrelated to the SAP L1.5 hub; a fresh clone won't have it. To silence the
+  warning, create `registries/generated/manifest.hocon` yourself with just `{}`.
+* **Similar Past Incidents section is empty, or the historical lookup finds nothing.** The 902-row dataset
+  (`coded_tools/sap_l15/data/routing_data_scrubbed.xlsx`) is intentionally gitignored (it's real, scrubbed
+  ticket data) and won't exist on a fresh clone — it has to be copied in separately. Without it, the network
+  still works end-to-end, just with no historical corroboration.
+
+### Dependencies
+
+Backend (from [`requirements.txt`](requirements.txt); the framework pulls in more, these are the ones the SAP
+L1.5 hub itself is load-bearing on):
+
+| Package | Version | Purpose |
+|---|---|---|
+| `neuro-san` | `==0.6.72` | Core multi-agent orchestration framework the hub runs on |
+| `nsflow` | `==0.6.16` | Generic dev UI / server companion |
+| `pyhocon` | `>=0.3.60` | Parses the HOCON agent-network config files |
+| `openpyxl` | `>=3.1.5` | Reads the historical ticket dataset (`.xlsx`) for the incident-similarity lookup tool |
+| `langchain-openai` | `>=1.1.9,<2.0` | LLM fallback #1 |
+| `langchain-anthropic` | `>=1.4.3,<2.0` | LLM fallback #2 |
+| `langchain-google-genai` | `>=4.2.2,<5.0` | LLM fallback #3 — the model actually used in most demo runs |
+| `langchain-mistralai` | `==1.1.2` | LLM fallback #4, once Gemini's free-tier quota is exhausted |
+| `python-dotenv` | `>=1.2.2,<2.0.0` | Loads API keys from `.env` |
+
+Frontend (from [`frontend/package.json`](frontend/package.json)):
+
+| Package | Version | Purpose |
+|---|---|---|
+| `react` / `react-dom` | `^19.2.7` | UI framework |
+| `vite` | `^8.1.1` | Dev server and build tool |
+| `typescript` | `~6.0.2` | Type checking |
+| `tailwindcss` | `^4.3.2` | Styling / design tokens |
+| `reactflow` | `^11.11.4` | Node-graph rendering for the agent-activity visualization |
+| `dagre` | `^0.8.5` | Auto-layout for the agent topology graph |
 
 ---
 
