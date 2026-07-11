@@ -70,6 +70,10 @@ Planning, PPDS/PP, or CIF/qRFC/IDoc) and return the final routed result card.
                         "chain_risk": {
                             "type": "string",
                             "description": "Yes or No -- whether the symptom could stem from an upstream CIF/transfer failure."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "Optional: the similar_incidents result already looked up upstream by TicketAnalysisAgent from the ticket's original wording. Only present when reached via ConsultorAgent (Category C), not when reached directly from L15SAPIntakeAgent for a Category A automated notification, since that path skips TicketAnalysisAgent entirely."
                         }
                     },
                     "required": ["context_package"]
@@ -85,7 +89,10 @@ deep diagnostics. Route by process_area:
 If process_area is missing or ambiguous, infer it from context_package before routing.
 When calling a specialist, pass your context_package input as its incident_context
 VERBATIM -- do not summarize or paraphrase it. The specialist needs the original
-wording intact so it can later be used to search historical ticket data.
+wording intact so it can later be used to search historical ticket data. Also pass
+similar_incidents through unchanged if you received one; if you did not receive one
+(the Category A direct-notification path), pass nothing -- the specialist will
+proceed with standard diagnostic reasoning in that case.
 
 If chain_risk is "Yes" AND the symptom is in SNP or DP, call BOTH that specialist
 AND CIFAPODiagnosticsAgent, since the true root cause may be an upstream CIF/transfer
@@ -115,6 +122,10 @@ failures, PPDS planned order anomalies, IDoc flooding (LOIPRO), and LiveCache er
                         "incident_context": {
                             "type": "string",
                             "description": "The full incident text or context package to diagnose."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "Optional: the similar_incidents result already looked up upstream by TicketAnalysisAgent from the ticket's original wording, passed through by FTSModuleAgent. May be absent if this ticket was reached via a direct Category A automated-notification path."
                         }
                     },
                     "required": ["incident_context"]
@@ -123,22 +134,24 @@ failures, PPDS planned order anomalies, IDoc flooding (LOIPRO), and LiveCache er
             "instructions": """
 You are a specialist SAP APO and CIF integration diagnostic agent.
 
-STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
-set to the incident_context you received VERBATIM (the original customer-facing
-wording, unparaphrased -- historical tickets are written in customer voice, not
-technical jargon, so the raw text matches them better than a technical summary
-would). Read its similar_incidents result. If any match has a real
-resolution_summary recorded (not "No resolution summary recorded"), treat that as
-the proven prior fix: prefer it over generic textbook reasoning when you state your
-root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
-it. If no match or no resolution_summary is found, proceed with standard diagnostic
+You receive similar_incidents already looked up upstream by TicketAnalysisAgent,
+from the ticket's original wording, before routing even began -- do NOT call
+HistoricalIncidentLookupTool yourself, it is not available to you here. If
+similar_incidents was provided and any match has a real resolution_summary recorded
+(not "No resolution summary recorded"), TRUST IT FULLY -- our historical ticket
+data is curated to only contain correct, verified resolutions. Base your root cause
+and fix steps directly on that recorded resolution rather than deriving your own
+independent diagnosis, and cite its Ticket_ID explicitly. If similar_incidents was
+not provided (e.g. this ticket arrived via a direct automated-notification path
+that skips TicketAnalysisAgent) or has no matches, proceed with standard diagnostic
 reasoning.
 
 Diagnostic approach:
 1. Identify whether this is a qRFC, IDoc, CIF-model, or LiveCache issue.
 2. State the root cause with specific evidence -- name the exact queue name, IDoc
-   status, or t-code involved. If a historical precedent (per STEP 0) applies, say
-   so explicitly and prefer its actual resolution over a generic guess.
+   status, or t-code involved. If a historical precedent (per similar_incidents
+   above) applies, say so explicitly and prefer its actual resolution over a
+   generic guess.
 3. List ordered verification steps (which transactions to check, in what order).
 4. State fix steps.
 5. Determine fix_owner: FTS | MDM | BASIS | WRICEF | ESCALATE. Use WRICEF when the
@@ -161,12 +174,12 @@ pass its contents to ITSMRouterAgent):
 
 Then call ITSMRouterAgent with diagnosis_summary (COMPONENT/ROOT_CAUSE/VERIFICATION/
 FIX_STEPS/CONFIDENCE), fix_owner, error_pattern, and similar_incidents set to the
-exact similar_incidents result you got from HistoricalIncidentLookupTool in STEP 0,
-passed through unchanged (do not call that tool again -- ITSMRouterAgent will not
-call it either; it just formats what you already found). Return ITSMRouterAgent's
-result verbatim, exactly once.
+similar_incidents you received above, passed through unchanged (if none was
+provided to you, pass a plain note that no historical lookup was available for this
+ticket -- ITSMRouterAgent requires the field but will format an absence gracefully).
+Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
+            "tools": ["ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -186,6 +199,10 @@ consensus locks.
                         "incident_context": {
                             "type": "string",
                             "description": "The full incident text or context package to diagnose."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "Optional: the similar_incidents result already looked up upstream by TicketAnalysisAgent from the ticket's original wording, passed through by FTSModuleAgent. May be absent if this ticket was reached via a direct Category A automated-notification path."
                         }
                     },
                     "required": ["incident_context"]
@@ -194,15 +211,16 @@ consensus locks.
             "instructions": """
 You are a specialist SAP APO Demand Planning diagnostic agent.
 
-STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
-set to the incident_context you received VERBATIM (the original customer-facing
-wording, unparaphrased -- historical tickets are written in customer voice, not
-technical jargon, so the raw text matches them better than a technical summary
-would). Read its similar_incidents result. If any match has a real
-resolution_summary recorded (not "No resolution summary recorded"), treat that as
-the proven prior fix: prefer it over generic textbook reasoning when you state your
-root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
-it. If no match or no resolution_summary is found, proceed with standard diagnostic
+You receive similar_incidents already looked up upstream by TicketAnalysisAgent,
+from the ticket's original wording, before routing even began -- do NOT call
+HistoricalIncidentLookupTool yourself, it is not available to you here. If
+similar_incidents was provided and any match has a real resolution_summary recorded
+(not "No resolution summary recorded"), TRUST IT FULLY -- our historical ticket
+data is curated to only contain correct, verified resolutions. Base your root cause
+and fix steps directly on that recorded resolution rather than deriving your own
+independent diagnosis, and cite its Ticket_ID explicitly. If similar_incidents was
+not provided (e.g. this ticket arrived via a direct automated-notification path
+that skips TicketAnalysisAgent) or has no matches, proceed with standard diagnostic
 reasoning.
 
 Diagnostic approach:
@@ -212,9 +230,9 @@ Diagnostic approach:
    combination with no rows in the planning book often means the CVC (characteristic
    value combination) has not yet been created/activated for that combination --
    name this explicitly as "characteristic value combination (CVC)" when applicable,
-   but if STEP 0 found a historical precedent with a different actual resolution
-   (e.g. a data-load/backup-cube issue), prefer that real precedent over this
-   generic heuristic.
+   but if similar_incidents above found a historical precedent with a different
+   actual resolution (e.g. a data-load/backup-cube issue), prefer that real
+   precedent over this generic heuristic.
 3. List ordered verification steps.
 4. State fix steps.
 5. Determine fix_owner: FTS | BI-BW | MDM | ESCALATE.
@@ -231,12 +249,12 @@ show this raw block to the user):
   missing new material", "forecast model MAPE MAD"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-similar_incidents set to the exact similar_incidents result you got from
-HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
-tool again -- ITSMRouterAgent will not call it either; it just formats what you
-already found). Return ITSMRouterAgent's result verbatim, exactly once.
+similar_incidents set to the similar_incidents you received above, passed through
+unchanged (if none was provided to you, pass a plain note that no historical lookup
+was available for this ticket -- ITSMRouterAgent requires the field but will format
+an absence gracefully). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
+            "tools": ["ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -256,6 +274,10 @@ and quota arrangements.
                         "incident_context": {
                             "type": "string",
                             "description": "The full incident text or context package to diagnose."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "Optional: the similar_incidents result already looked up upstream by TicketAnalysisAgent from the ticket's original wording, passed through by FTSModuleAgent. May be absent if this ticket was reached via a direct Category A automated-notification path."
                         }
                     },
                     "required": ["incident_context"]
@@ -264,15 +286,16 @@ and quota arrangements.
             "instructions": """
 You are a specialist SAP APO Supply Network Planning diagnostic agent.
 
-STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
-set to the incident_context you received VERBATIM (the original customer-facing
-wording, unparaphrased -- historical tickets are written in customer voice, not
-technical jargon, so the raw text matches them better than a technical summary
-would). Read its similar_incidents result. If any match has a real
-resolution_summary recorded (not "No resolution summary recorded"), treat that as
-the proven prior fix: prefer it over generic textbook reasoning when you state your
-root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
-it. If no match or no resolution_summary is found, proceed with standard diagnostic
+You receive similar_incidents already looked up upstream by TicketAnalysisAgent,
+from the ticket's original wording, before routing even began -- do NOT call
+HistoricalIncidentLookupTool yourself, it is not available to you here. If
+similar_incidents was provided and any match has a real resolution_summary recorded
+(not "No resolution summary recorded"), TRUST IT FULLY -- our historical ticket
+data is curated to only contain correct, verified resolutions. Base your root cause
+and fix steps directly on that recorded resolution rather than deriving your own
+independent diagnosis, and cite its Ticket_ID explicitly. If similar_incidents was
+not provided (e.g. this ticket arrived via a direct automated-notification path
+that skips TicketAnalysisAgent) or has no matches, proceed with standard diagnostic
 reasoning.
 
 Diagnostic approach:
@@ -302,12 +325,12 @@ show this raw block to the user):
   transportation lane heuristic", "deployment frozen zone safety stock"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-similar_incidents set to the exact similar_incidents result you got from
-HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
-tool again -- ITSMRouterAgent will not call it either; it just formats what you
-already found). Return ITSMRouterAgent's result verbatim, exactly once.
+similar_incidents set to the similar_incidents you received above, passed through
+unchanged (if none was provided to you, pass a plain note that no historical lookup
+was available for this ticket -- ITSMRouterAgent requires the field but will format
+an absence gracefully). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
+            "tools": ["ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -327,6 +350,10 @@ issues: pegging, production versions, lot-size, scheduling, and the DS
                         "incident_context": {
                             "type": "string",
                             "description": "The full incident text or context package to diagnose."
+                        },
+                        "similar_incidents": {
+                            "type": "string",
+                            "description": "Optional: the similar_incidents result already looked up upstream by TicketAnalysisAgent from the ticket's original wording, passed through by FTSModuleAgent. May be absent if this ticket was reached via a direct Category A automated-notification path."
                         }
                     },
                     "required": ["incident_context"]
@@ -335,15 +362,16 @@ issues: pegging, production versions, lot-size, scheduling, and the DS
             "instructions": """
 You are a specialist SAP PPDS/PP diagnostic agent.
 
-STEP 0 -- BEFORE diagnosing, call HistoricalIncidentLookupTool with incident_text
-set to the incident_context you received VERBATIM (the original customer-facing
-wording, unparaphrased -- historical tickets are written in customer voice, not
-technical jargon, so the raw text matches them better than a technical summary
-would). Read its similar_incidents result. If any match has a real
-resolution_summary recorded (not "No resolution summary recorded"), treat that as
-the proven prior fix: prefer it over generic textbook reasoning when you state your
-root cause and fix steps below, and cite its Ticket_ID explicitly when you rely on
-it. If no match or no resolution_summary is found, proceed with standard diagnostic
+You receive similar_incidents already looked up upstream by TicketAnalysisAgent,
+from the ticket's original wording, before routing even began -- do NOT call
+HistoricalIncidentLookupTool yourself, it is not available to you here. If
+similar_incidents was provided and any match has a real resolution_summary recorded
+(not "No resolution summary recorded"), TRUST IT FULLY -- our historical ticket
+data is curated to only contain correct, verified resolutions. Base your root cause
+and fix steps directly on that recorded resolution rather than deriving your own
+independent diagnosis, and cite its Ticket_ID explicitly. If similar_incidents was
+not provided (e.g. this ticket arrived via a direct automated-notification path
+that skips TicketAnalysisAgent) or has no matches, proceed with standard diagnostic
 reasoning.
 
 Diagnostic approach:
@@ -369,12 +397,12 @@ show this raw block to the user):
   size", "pegging planned order not covered"]
 
 Then call ITSMRouterAgent with diagnosis_summary, fix_owner, error_pattern, and
-similar_incidents set to the exact similar_incidents result you got from
-HistoricalIncidentLookupTool in STEP 0, passed through unchanged (do not call that
-tool again -- ITSMRouterAgent will not call it either; it just formats what you
-already found). Return ITSMRouterAgent's result verbatim, exactly once.
+similar_incidents set to the similar_incidents you received above, passed through
+unchanged (if none was provided to you, pass a plain note that no historical lookup
+was available for this ticket -- ITSMRouterAgent requires the field but will format
+an absence gracefully). Return ITSMRouterAgent's result verbatim, exactly once.
 """ ${sap_domain_preamble} ${pass_through_once_guard},
-            "tools": ["HistoricalIncidentLookupTool", "ITSMRouterAgent"]
+            "tools": ["ITSMRouterAgent"]
         },
 
         # ================================================================
@@ -405,7 +433,7 @@ already-looked-up similar past incidents into one final structured output.
                         },
                         "similar_incidents": {
                             "type": "string",
-                            "description": "The exact similar_incidents result the calling specialist already got back from HistoricalIncidentLookupTool (called before diagnosing, so its findings could inform the diagnosis). Pass through unchanged -- do not call that tool again here."
+                            "description": "The similar_incidents result, originally looked up by TicketAnalysisAgent from the ticket's original wording and threaded through ConsultorAgent -> FTSModuleAgent -> the specialist that called you (or a plain note that none was available, if this ticket reached FTS via a direct automated-notification path). Pass through unchanged -- do not call HistoricalIncidentLookupTool here."
                         }
                     },
                     "required": ["diagnosis_summary", "fix_owner", "error_pattern", "similar_incidents"]
@@ -413,9 +441,9 @@ already-looked-up similar past incidents into one final structured output.
             },
             "instructions": """
 You are the ITSM routing specialist for the SAP L1.5 hub. Call ITSMQueueLookupTool
-with fix_owner. The specialist that called you already looked up similar historical
-incidents (via HistoricalIncidentLookupTool) before it diagnosed the issue, and
-passed you that result as similar_incidents -- do NOT call HistoricalIncidentLookupTool
+with fix_owner. The historical-incident lookup for this ticket was already done far
+upstream (by TicketAnalysisAgent, from the ticket's original wording) and threaded
+through to you as similar_incidents -- do NOT call HistoricalIncidentLookupTool
 yourself, just format what you were given. Using ITSMQueueLookupTool's result plus
 diagnosis_summary and similar_incidents, return your output in EXACTLY this
 template, verbatim, ONCE -- do not repeat it, do not call ITSMQueueLookupTool more
@@ -463,27 +491,12 @@ ESCALATION      : [if unresolved, contact -- from ITSMQueueLookupTool notes]
                 }
             },
             "class": "coded_tools.sap_l15.itsm_queue_lookup.ITSMQueueLookupTool"
-        },
-
-        # ================================================================
-        # CODED TOOL: Historical Incident Lookup
-        # ================================================================
-        {
-            "name": "HistoricalIncidentLookupTool",
-            "function": {
-                "description": "Finds the most similar past incidents in our historical ticket data (TF-IDF + cosine similarity over 902 real, scrubbed tickets) for a given incident description, and returns how those tickets were routed and resolved. Deterministic lookup, no LLM, no external API -- we don't have real SAP Support Portal access, so this replaces SAP Note citations.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "incident_text": {
-                            "type": "string",
-                            "description": "The incident description or short error-pattern phrase to match against historical ticket descriptions."
-                        }
-                    },
-                    "required": ["incident_text"]
-                }
-            },
-            "class": "coded_tools.sap_l15.historical_incident_lookup.HistoricalIncidentLookupTool"
         }
+        # HistoricalIncidentLookupTool used to be defined here and called by each
+        # specialist as their own STEP 0. It has moved to ../sap_l15_hub.hocon,
+        # called once by TicketAnalysisAgent before routing even begins, and its
+        # result is threaded down through ConsultorAgent -> FTSModuleAgent -> the
+        # specialist -> ITSMRouterAgent instead. No agent in this file calls it
+        # anymore, so it is not (and should not be) redefined here.
     ]
 }
